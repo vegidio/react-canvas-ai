@@ -1,0 +1,15 @@
+root = true
+
+[*]
+charset = utf-8
+indent_size = 4
+indent_style = space
+insert_final_newline = false
+max_line_length = 120
+trim_trailing_whitespace = true
+
+# IntelliJ
+ij_visual_guides = none
+
+[*.yml]
+indent_size = 2

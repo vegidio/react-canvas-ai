@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "skipLibCheck": true,
+    "outDir": "./dist/",
+    "rootDir": "./src",
+    "noImplicitAny": false,
+    "module": "commonjs",
+    "target": "es2021",
+    "jsx": "react",
+    "allowJs": true,
+    "declaration": true,
+    "declarationDir": "./dist",
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "moduleResolution": "node",
+    "lib": [
+      "es2021",
+      "dom"
+    ]
+  },
+  "exclude": [
+    "example",
+    "test",
+    "node_modules",
+    "dist",
+    "eslint.config.js",
+    "webpack.config.js"
+  ],
+  "include": [
+    "src/**/*"
+  ]
+}
