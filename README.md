@@ -1,12 +1,12 @@
-# react-canvas-masker
+# react-canvas-ai
 
 > 🖌️ A lightweight, flexible React component and hook for drawing and extracting masks from images using canvas. Perfect for AI workflows, in-browser image editing tools, and selective manipulation.
 
 ---
 
-## 🧠 What is `react-canvas-masker`?
+## 🧠 What is `react-canvas-ai`?
 
-`react-canvas-masker` is a modern and actively maintained React library that allows users to **draw freeform masks over images**, extract those masked regions, and integrate with **AI-powered image processing** workflows or any kind of **canvas-based editing tool**.
+`react-canvas-ai` is a modern and actively maintained React library that allows users to **draw freeform masks over images**, extract those masked regions, and integrate with **AI-powered image processing** workflows or any kind of **canvas-based editing tool**.
 
 It’s built as an enhanced fork of [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor), rewritten with:
 
@@ -34,10 +34,16 @@ It’s built as an enhanced fork of [`react-mask-editor`](https://www.npmjs.com/
 ## 📆 Installation
 
 ```bash
-npm install react-canvas-masker
+pnpm add react-canvas-ai
 # or
-yarn add react-canvas-masker
+npm install react-canvas-ai
 ```
+
+There is **no stylesheet to import** — the component applies everything it needs itself.
+
+> **Versioning:** this package uses CalVer (`YY.M.MICRO`, e.g. `26.8.0`). Version numbers
+> carry no semver meaning, so a `^` range *can* pull in breaking changes. Pin an exact
+> version if that matters to you, and check the changelog before upgrading.
 
 ---
 
@@ -45,7 +51,7 @@ yarn add react-canvas-masker
 
 ```tsx
 import React from 'react';
-import { MaskEditor, toMask } from 'react-canvas-masker';
+import { MaskEditor, toMask } from 'react-canvas-ai';
 
 const MyComponent = () => {
   const canvas = React.useRef(null);
@@ -72,7 +78,7 @@ You can resume editing from a previously saved mask by passing it as the `initia
 
 ```tsx
 import React from 'react';
-import { MaskEditor, toMask } from 'react-canvas-masker';
+import { MaskEditor, toMask } from 'react-canvas-ai';
 
 const MyComponent = () => {
   const canvas = React.useRef(null);
@@ -120,29 +126,35 @@ const MyComponent = () => {
 
 ## ⚙️ Component Props
 
-| Prop                 | Type                             | Required   | Default   | Description                                                                                  |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| -------------------- | -------------------------------- | ---------- | --------- | -------------------------------------------------------------------------------------------- | -------- | --------- | ------------- | ------------ | ------------ | ------------ | ------------ | ----------- | ----- | ------------ | ------- | -------------- | --- | -------- | ---------------------------------------------------------------------------------------------------- |
-| `src`                | `string`                         | Yes        | —         | Source URL of the image to edit.                                                             |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `cursorSize`         | `number`                         | No         | `10`      | Radius (in pixels) of the brush for editing the mask.                                        |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onCursorSizeChange` | `(size: number) => void`         | No         | —         | Callback when the user changes the brush size via mouse wheel.                               |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maskOpacity`        | `number`                         | No         | `0.4`     | CSS opacity, decimal between 0–1.                                                            |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maskColor`          | `string`                         | No         | `#ffffff` | Hex color (with or without leading '#') for the mask.                                        |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maskBlendMode`      | \`"normal"                       | "multiply" | "screen"  | "overlay"                                                                                    | "darken" | "lighten" | "color-dodge" | "color-burn" | "hard-light" | "soft-light" | "difference" | "exclusion" | "hue" | "saturation" | "color" | "luminosity"\` | No  | `normal` | [CSS blending mode](https://developer.mozilla.org/en-US/docs/Web/CSS/blend-mode) for the mask layer. |
-| `onDrawingChange`    | `(isDrawing: boolean) => void`   | Yes        | —         | Called when the user starts or stops drawing.                                                |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maxWidth`           | `number`                         | No         | `1240`    | Maximum width for loaded images. Images larger than this will be scaled down automatically.  |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maxHeight`          | `number`                         | No         | `1240`    | Maximum height for loaded images. Images larger than this will be scaled down automatically. |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `crossOrigin`        | `string`                         | No         | —         | Value for the `crossOrigin` attribute on the underlying `<img>`. Useful for CORS images.     |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onUndoRequest`      | `() => void`                     | No         | —         | Called when the user requests an undo action.                                                |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onRedoRequest`      | `() => void`                     | No         | —         | Called when the user requests a redo action.                                                 |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onMaskChange`       | `(mask: string) => void`         | No         | —         | Called with the current mask (as a dataURL) when the mask changes. Debounced while drawing.  |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `initialMask`        | `string`                         | No         | —         | Pre-load an existing mask as base64 data URL. Useful for resuming editing from a saved state. |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `scale`              | `number`                         | No         | `1`       | Initial zoom scale for the image editor.                                                     |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `minScale`           | `number`                         | No         | `0.8`     | Minimum allowed zoom scale.                                                                  |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `maxScale`           | `number`                         | No         | `4`       | Maximum allowed zoom scale.                                                                  |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onScaleChange`      | `(scale: number) => void`        | No         | —         | Callback when the zoom scale changes.                                                        |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `enableWheelZoom`    | `boolean`                        | No         | `true`    | Enable/disable zooming with the mouse wheel.                                                 |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `onPanChange`        | `(x: number, y: number) => void` | No         | —         | Callback when the pan position changes.                                                      |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
-| `constrainPan`       | `boolean`                        | No         | `true`    | Enable/disable constraints that keep the image in view while panning.                        |          |           |               |              |              |              |              |             |       |              |         |                |     |          |                                                                                                      |
+| Prop | Type | Required | Default | Description |
+| --- | --- | --- | --- | --- |
+| `src` | `string` | Yes | — | Source URL of the image to edit. |
+| `onDrawingChange` | `(isDrawing: boolean) => void` | Yes | — | Called when the user starts or stops drawing. |
+| `className` | `string` | No | — | Appended to the root element's own class name. |
+| `style` | `React.CSSProperties` | No | — | Merged over the root element's built-in layout styles (yours win). |
+| `cursorSize` | `number` | No | `10` | Radius in pixels of the brush. |
+| `onCursorSizeChange` | `(size: number) => void` | No | — | Called when the user changes the brush size with the wheel. Omit it and wheel resizing is disabled. |
+| `maskOpacity` | `number` | No | `0.4` | CSS opacity of the mask layer, 0–1. |
+| `maskColor` | `string` | No | `#ffffff` | Hex colour for the mask, with or without the leading `#`. |
+| `maskBlendMode` | `MaskBlendMode` | No | `normal` | [CSS blend mode](https://developer.mozilla.org/en-US/docs/Web/CSS/blend-mode) for the mask layer. |
+| `maxWidth` | `number` | No | `1240` | Images wider than this are scaled down. |
+| `maxHeight` | `number` | No | `1240` | Images taller than this are scaled down. |
+| `crossOrigin` | `string` | No | `anonymous` | `crossOrigin` attribute for the underlying `<img>`. Useful for CORS images. |
+| `onUndoRequest` | `() => void` | No | — | Called when the user requests an undo. |
+| `onRedoRequest` | `() => void` | No | — | Called when the user requests a redo. |
+| `onMaskChange` | `(mask: string) => void` | No | — | Called with the mask as a data URL. Debounced while drawing. |
+| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. |
+| `scale` | `number` | No | `1` | Initial zoom scale. |
+| `minScale` | `number` | No | `0.8` | Minimum zoom scale. |
+| `maxScale` | `number` | No | `4` | Maximum zoom scale. |
+| `onScaleChange` | `(scale: number) => void` | No | — | Called when the zoom scale changes. |
+| `enableWheelZoom` | `boolean` | No | `true` | Allow `Ctrl`/`Cmd` + wheel to zoom. |
+| `onPanChange` | `(x: number, y: number) => void` | No | — | Called when the pan position changes. |
+| `constrainPan` | `boolean` | No | `true` | Keep the image within view while panning. |
+
+`MaskBlendMode` is the union of the CSS `mix-blend-mode` keywords: `normal`, `multiply`,
+`screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`,
+`soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`.
 
 ---
 
@@ -314,7 +326,7 @@ const CustomMaskEditor = () => {
 Ideal if you want to split canvas and controls across components:
 
 ```tsx
-import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-masker';
+import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
 
 const MaskEditorCanvas = () => {
   const {
@@ -459,13 +471,100 @@ const CustomZoomControls = () => {
 
 ## 💡 Use Cases
 
-`react-canvas-masker` is great for:
+`react-canvas-ai` is great for:
 
 - ✨ **AI image editing apps** (e.g. Stable Diffusion, DALL·E, Sora, etc.)
 - 🔧 **Web-based design tools** (like Figma clones or mockup tools)
 - 📍 **Educational tools** where users interact with images
 - 🔮 **Selective filtering or redacting images** (blur, crop, etc.)
 - 🚀 **Creative playgrounds** or generative UIs
+
+---
+
+## 🎨 Styling
+
+The component ships **no CSS file** and requires no import. Structural styles (canvas
+stacking, sizing, compositor hints) are applied inline so the library works in any
+bundler and any SSR setup out of the box.
+
+Two ways to customise it:
+
+```tsx
+<MaskEditor src={src} onDrawingChange={setDrawing} className='my-editor' style={{ maxHeight: 600 }} />
+```
+
+Or target the stable class names, which are kept purely as styling hooks:
+
+`react-mask-editor-outer` · `react-mask-editor-inner` · `canvas-container` ·
+`all-canvases` · `react-mask-editor-base-canvas` · `react-mask-editor-mask-canvas` ·
+`react-mask-editor-cursor-canvas`
+
+Because the built-in rules are inline, a plain class selector will not beat them — use
+the `style` prop (it is merged last and wins) or `!important` in your own stylesheet.
+
+---
+
+## 🔀 Migrating from `react-canvas-masker` 1.x
+
+1. **Rename the dependency** to `react-canvas-ai` and update every import.
+2. **Delete the stylesheet import.** `import 'react-canvas-masker/dist/style.css'` no
+   longer exists and is no longer needed.
+3. **Drop ref casts.** Refs are now typed `RefObject<T | null>`, matching what
+   `useRef<T>(null)` actually returns under React 19:
+   ```diff
+   - const canvas = React.useRef<MaskEditorCanvasRef>(null) as React.RefObject<MaskEditorCanvasRef>;
+   + const canvas = React.useRef<MaskEditorCanvasRef>(null);
+   ```
+4. **Re-check your version range.** Versioning is CalVer now — see
+   [Installation](#-installation).
+
+Fixed along the way: `ref.current.maskCanvas` used to stay `null` forever, losing focus
+mid-pan left the page stuck on `cursor: grabbing`, and `toMask` crashed when a 2D context
+was unavailable.
+
+---
+
+## 🛠️ Development
+
+```bash
+pnpm install
+pnpm dev:playground   # library in watch mode + playground on :3000
+pnpm check            # what CI runs: biome + typecheck + tests
+pnpm build            # ESM + CJS + .d.ts
+```
+
+Releases go through [Changesets](https://github.com/changesets/changesets)
+(`pnpm changeset`); `scripts/calver.mjs` stamps the CalVer version afterwards, since
+Changesets only understands semver.
+
+### Why the build is set up this way
+
+Worth recording, because it is a decision to revisit rather than rediscover.
+
+TypeScript 7.0 is a ground-up rewrite in Go, and it does **not** yet expose the
+JavaScript compiler API (`import * as ts from 'typescript'`) or emit declarations. That
+breaks every tool that generates `.d.ts` through the compiler — `vite-plugin-dts`,
+`tsup --dts`, api-extractor. It is not a Vite limitation: ordinary Vite apps run fine on
+TS 7, and the playground here does.
+
+So this package sets `isolatedDeclarations: true` and lets **tsdown** generate
+declarations with oxc (Rust), which never loads the TypeScript compiler. The cost is
+explicit type annotations on exported symbols.
+
+**What changes in TS 7.1:** a new compiler API is being built for 7.1, with declaration
+emit on the list. Once it ships, `vite-plugin-dts` and friends can support TS 7 and this
+constraint disappears.
+
+**The decision to make then:** keep `isolatedDeclarations` (faster, parallel, Rust-speed
+`.d.ts`, but the annotations must be maintained) or drop it and let the compiler infer
+declarations (no annotations, slower builds). Note that `isolatedDeclarations` shipped in
+TS 5.5, well before the Go rewrite — it is a deliberate design direction, not a TS 7
+workaround — so **both options stay valid long term**, and the annotations are not wasted
+either way, since explicit public return types are good API hygiene regardless.
+
+Sources worth re-checking when the time comes:
+[TypeScript 7 progress](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/) ·
+[tsdown dts options](https://tsdown.dev/options/dts)
 
 ---
 
@@ -480,7 +579,7 @@ const CustomZoomControls = () => {
 
 ## 📖 License
 
-MIT
+Apache-2.0 — see [LICENSE](./LICENSE).
 
 ---
 
