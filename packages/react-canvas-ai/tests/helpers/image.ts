@@ -1,3 +1,6 @@
+import { act } from '@testing-library/react';
+import { afterEach, beforeEach, vi } from 'vitest';
+
 /**
  * jsdom never loads images: assigning `img.src` does not fire `onload`, and useMaskEditor
  * is entirely gated on that event. This patches the `src` setter so assigning it reports
@@ -15,6 +18,9 @@ export interface MockImage {
 
 /** Either one response for every source, or a function picking one per source. */
 export type MockImageResolver = MockImage | ((src: string) => MockImage);
+
+/** A 1x1 PNG. Any test that only needs *a* source uses this one. */
+export const SRC = 'data:image/png;base64,iVBORw0KGgo=';
 
 export function mockImageLoad(opts: MockImageResolver): () => void {
     const original = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
@@ -48,4 +54,43 @@ export function mockImageLoad(opts: MockImageResolver): () => void {
     return () => {
         if (original) Object.defineProperty(HTMLImageElement.prototype, 'src', original);
     };
+}
+
+/**
+ * Installs the image mock for a whole suite, restoring it afterwards, and returns a
+ * `remock` for the tests that need different dimensions or a failure part-way through.
+ *
+ * Every editor suite needs this same beforeEach/afterEach pair; keeping it here stops each
+ * one hand-rolling its own `let restoreImage` bookkeeping.
+ */
+export function installImageMock(defaults: MockImageResolver): (opts: MockImageResolver) => void {
+    let restore: () => void = () => {};
+
+    beforeEach(() => {
+        restore = mockImageLoad(defaults);
+    });
+
+    afterEach(() => {
+        restore();
+    });
+
+    return (opts: MockImageResolver) => {
+        restore();
+        restore = mockImageLoad(opts);
+    };
+}
+
+/**
+ * Lets the image `onload` microtask and the hook's deferred timers settle.
+ *
+ * Several turns: the remote-source path chains fetch -> blob -> FileReader before it ever
+ * assigns img.src, so a single microtask flush is not enough. Requires fake timers.
+ */
+export async function settle(): Promise<void> {
+    for (let i = 0; i < 5; i++) {
+        await act(async () => {
+            await Promise.resolve();
+            vi.advanceTimersByTime(200);
+        });
+    }
 }

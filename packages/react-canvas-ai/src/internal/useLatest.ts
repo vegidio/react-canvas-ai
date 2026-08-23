@@ -24,5 +24,5 @@ export function useLatest<T>(value: T): React.RefObject<T> {
  */
 export function useEventCallback<A extends unknown[]>(fn: ((...args: A) => void) | undefined): (...args: A) => void {
     const ref = useLatest(fn);
-    return React.useCallback((...args: A) => ref.current?.(...args), [ref]);
+    return React.useCallback((...args: A) => ref.current?.(...args), []);
 }

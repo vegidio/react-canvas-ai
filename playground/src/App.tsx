@@ -1,6 +1,5 @@
 import * as React from 'react';
 import { MaskEditor, type MaskEditorCanvasRef, toMask } from 'react-canvas-ai';
-// import './App.css';
 import MaskEditorProviderExample from './MaskEditorProviderExample';
 
 function App() {
@@ -84,7 +83,6 @@ function App() {
                         }}
                     >
                         <MaskEditor
-                            key={'mask-editor'}
                             src={imgSrc}
                             maskColor={color}
                             cursorSize={size}
@@ -107,64 +105,33 @@ function App() {
                     <button
                         type='button'
                         onClick={() => {
-                            if (canvas.current?.maskCanvas) {
-                                setMask(toMask(canvas.current.maskCanvas));
-                            }
+                            const maskCanvas = canvas.current?.maskCanvas;
+                            if (maskCanvas) setMask(toMask(maskCanvas));
                         }}
                     >
                         Extract Mask
                     </button>
-                    <button type='button' onClick={() => canvas.current?.undo?.()}>
+                    <button type='button' onClick={() => canvas.current?.undo()}>
                         Undo
                     </button>
-                    <button type='button' onClick={() => canvas.current?.redo?.()}>
+                    <button type='button' onClick={() => canvas.current?.redo()}>
                         Redo
                     </button>
-                    <button type='button' onClick={() => canvas.current?.clear?.()}>
+                    <button type='button' onClick={() => canvas.current?.clear()}>
                         Clear
                     </button>
-                    <button
-                        type='button'
-                        onClick={() => {
-                            if (canvas.current?.zoomIn) {
-                                canvas.current.zoomIn();
-                            }
-                        }}
-                    >
+                    <button type='button' onClick={() => canvas.current?.zoomIn()}>
                         Zoom in
                     </button>
-                    <button
-                        type='button'
-                        onClick={() => {
-                            if (canvas.current?.zoomOut) {
-                                canvas.current.zoomOut();
-                            }
-                        }}
-                    >
+                    <button type='button' onClick={() => canvas.current?.zoomOut()}>
                         Zoom out
                     </button>
-                    <button
-                        type='button'
-                        onClick={() => {
-                            // Prefer the imperative resetZoom, which also recentres the view.
-                            if (canvas.current?.resetZoom) {
-                                canvas.current.resetZoom();
-                            } else {
-                                setScale(1);
-                            }
-                        }}
-                    >
+                    {/* resetZoom rather than setScale(1): it also recentres the view. */}
+                    <button type='button' onClick={() => canvas.current?.resetZoom()}>
                         Reset Zoom
                     </button>
                     <span style={{ color: '#888' }}>{drawing ? 'Drawing…' : 'Idle'}</span>
-                    <button
-                        type='button'
-                        onClick={() => {
-                            if (canvas.current?.setPan) {
-                                canvas.current.setPan(0, 0);
-                            }
-                        }}
-                    >
+                    <button type='button' onClick={() => canvas.current?.setPan(0, 0)}>
                         Center View
                     </button>
                 </div>
@@ -240,7 +207,6 @@ function App() {
                         </div>
                     </div>
                 )}
-                <div style={{ marginTop: 16 }}></div>
             </div>
             <div style={{ padding: 32 }}>
                 <MaskEditorProviderExample />

@@ -28,7 +28,17 @@
             "correctness": {
                 "noUnusedImports": "error",
                 "useUniqueElementIds": "off",
-                "useExhaustiveDependencies": "error"
+                "useExhaustiveDependencies": {
+                    "level": "error",
+                    "options": {
+                        "hooks": [
+                            {
+                                "name": "useLatest",
+                                "stableResult": true
+                            }
+                        ]
+                    }
+                }
             },
             "suspicious": {
                 "noArrayIndexKey": "off"

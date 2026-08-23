@@ -31,23 +31,13 @@ function setup(options: ZoomPanOptions = {}, contentSize = CONTENT) {
     return renderHook(() => useZoomPan(ref, contentSize, options));
 }
 
-/** Advance past the setTimeout(..., 0) that several actions defer their callbacks with. */
-function flush() {
-    act(() => {
-        vi.advanceTimersByTime(10);
-    });
-}
-
 /** Raise `transform.scale` above 1, which is what actually gates panning. */
 function zoomInto(result: { current: readonly [unknown, { zoomIn: () => void }] }) {
     act(() => result.current[1].zoomIn());
-    flush();
     act(() => result.current[1].zoomIn());
-    flush();
 }
 
 beforeEach(() => {
-    vi.useFakeTimers();
     container = mountContainer();
 });
 
@@ -79,7 +69,6 @@ describe('zoom actions', () => {
         const { result } = setup({ onScaleChange });
 
         act(() => result.current[1].zoomIn());
-        flush();
 
         expect(result.current[0].scale).toBeCloseTo(1.2);
         expect(onScaleChange).toHaveBeenCalledWith(expect.closeTo(1.2));
@@ -90,19 +79,16 @@ describe('zoom actions', () => {
         const { result } = setup({ onScaleChange });
 
         for (let i = 0; i < 30; i++) act(() => result.current[1].zoomIn());
-        flush();
         expect(result.current[0].scale).toBe(4);
 
         onScaleChange.mockClear();
         act(() => result.current[1].zoomIn());
-        flush();
         expect(onScaleChange).not.toHaveBeenCalled();
     });
 
     it('clamps at minScale', () => {
         const { result } = setup();
         for (let i = 0; i < 30; i++) act(() => result.current[1].zoomOut());
-        flush();
         expect(result.current[0].scale).toBe(0.8);
     });
 
@@ -112,9 +98,7 @@ describe('zoom actions', () => {
         const { result } = setup({ onScaleChange, onPanChange });
 
         act(() => result.current[1].zoomIn());
-        flush();
         act(() => result.current[1].resetZoom());
-        flush();
 
         expect(result.current[0].scale).toBe(1);
         expect(result.current[0].transform).toEqual({ scale: 1, translateX: 0, translateY: 0 });
@@ -149,11 +133,9 @@ describe('panning', () => {
         const { result } = setup({ onPanChange });
 
         act(() => result.current[1].setPan(10, 10));
-        flush();
         onPanChange.mockClear();
 
         act(() => result.current[1].setPan(10, 10));
-        flush();
         expect(onPanChange).not.toHaveBeenCalled();
     });
 });
@@ -335,7 +317,6 @@ describe('write ordering', () => {
 
         act(() => result.current[1].zoomIn());
         act(() => result.current[1].resetZoom());
-        flush();
 
         expect(result.current[0].scale).toBe(1);
         expect(result.current[0].transform.scale).toBe(1);

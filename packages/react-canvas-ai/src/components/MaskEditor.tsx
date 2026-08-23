@@ -126,16 +126,7 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
         };
     }, [transform, effectiveScale, isPanning, size]);
 
-    // Determine the appropriate cursor based on current state
-    const containerCursorStyle = React.useMemo(() => {
-        if (isPanning) {
-            return 'grabbing';
-        }
-        if (isZoomKeyDown) {
-            return 'zoom-in';
-        }
-        return 'default';
-    }, [isPanning, isZoomKeyDown]);
+    const containerCursorStyle = isPanning ? 'grabbing' : isZoomKeyDown ? 'zoom-in' : 'default';
 
     const handleKeyDown = React.useCallback((e: React.KeyboardEvent) => {
         if (e.code === 'Space') {

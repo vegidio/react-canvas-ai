@@ -171,8 +171,8 @@ The `MaskEditor` component exposes useful methods via `ref`:
 | `clear()`     | `() => void`                     | Clear the mask.                                   |                          |
 | `resetZoom()` | `() => void`                     | Reset zoom to initial scale and center the image. |                          |
 | `setPan()`    | `(x: number, y: number) => void` | Set the pan position manually.                    |                          |
-| `zoomIn()`    | `() => void`                     | Zoom in by one step (0.1 scale increment).        |                          |
-| `zoomOut()`   | `() => void`                     | Zoom out by one step (0.1 scale decrement).       |                          |
+| `zoomIn()`    | `() => void`                     | Zoom in by one step (0.2 scale increment).        |                          |
+| `zoomOut()`   | `() => void`                     | Zoom out by one step (0.2 scale decrement).       |                          |
 
 ---
 
@@ -448,8 +448,8 @@ moved, so panning cannot get stuck on.
 
 The editor now provides explicit zoom control methods through the imperative API:
 
-- **zoomIn()**: Increases zoom by 0.1 scale increment (respects maxScale limit)
-- **zoomOut()**: Decreases zoom by 0.1 scale decrement (respects minScale limit)
+- **zoomIn()**: Increases zoom by 0.2 scale increment (respects maxScale limit)
+- **zoomOut()**: Decreases zoom by 0.2 scale decrement (respects minScale limit)
 - **resetZoom()**: Resets zoom to scale 1 and centers the image
 - **setPan(x, y)**: Manually sets the pan position
 

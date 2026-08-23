@@ -1,20 +1,12 @@
 import { render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { MaskEditorContextValue } from '../src/components/MaskEditorProvider';
 import { MaskEditorProvider, useMaskEditorContext } from '../src/components/MaskEditorProvider';
-import { mockImageLoad } from './helpers/image';
+import { installImageMock } from './helpers/image';
 
 const SRC = 'data:image/png;base64,iVBORw0KGgo=';
 
-let restoreImage: () => void;
-
-beforeEach(() => {
-    restoreImage = mockImageLoad({ width: 200, height: 200 });
-});
-
-afterEach(() => {
-    restoreImage();
-});
+installImageMock({ width: 200, height: 200 });
 
 describe('MaskEditorProvider', () => {
     it('renders its children', () => {

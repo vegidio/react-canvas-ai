@@ -1,21 +1,14 @@
 import { act, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UseMaskEditorProps } from '../src/hooks/useMaskEditor';
 import { useMaskEditor } from '../src/hooks/useMaskEditor';
-import { mockImageLoad } from './helpers/image';
-
-const SRC = 'data:image/png;base64,iVBORw0KGgo=';
-
-let restoreImage: () => void;
+import { installImageMock, SRC, settle } from './helpers/image';
 
 beforeEach(() => {
     vi.useFakeTimers();
-    restoreImage = mockImageLoad({ width: 2480, height: 1240 });
 });
 
-afterEach(() => {
-    restoreImage();
-});
+const remockImage = installImageMock({ width: 2480, height: 1240 });
 
 /**
  * Renders the hook against a real mounted DOM tree, because the hook wires refs to live
@@ -43,19 +36,8 @@ function setup(props: Partial<UseMaskEditorProps> = {}) {
 
     const utils = render(<Harness />);
     const state = () => captured.current as ReturnType<typeof useMaskEditor>;
-    return { ...utils, state, onDrawingChange };
-}
-
-/** Let the image `onload` microtask and the hook's deferred timers settle. */
-async function settle() {
-    // Several turns: the remote-source path chains fetch -> blob -> FileReader before it
-    // ever assigns img.src, so a single microtask flush is not enough.
-    for (let i = 0; i < 5; i++) {
-        await act(async () => {
-            await Promise.resolve();
-            vi.advanceTimersByTime(200);
-        });
-    }
+    const cursorCanvas = () => state().cursorCanvasRef.current as HTMLCanvasElement;
+    return { ...utils, state, cursorCanvas, onDrawingChange };
 }
 
 describe('wiring', () => {
@@ -82,16 +64,14 @@ describe('image sizing', () => {
     });
 
     it('honours an explicit maxWidth', async () => {
-        restoreImage();
-        restoreImage = mockImageLoad({ width: 800, height: 600 });
+        remockImage({ width: 800, height: 600 });
         const { state } = setup({ maxWidth: 400 });
         await settle();
         expect(state().size).toEqual({ x: 400, y: 300 });
     });
 
     it('clamps tiny images up to a usable size', async () => {
-        restoreImage();
-        restoreImage = mockImageLoad({ width: 10, height: 10 });
+        remockImage({ width: 10, height: 10 });
         const { state } = setup();
         await settle();
         expect(state().size.x).toBeGreaterThanOrEqual(50);
@@ -99,16 +79,14 @@ describe('image sizing', () => {
     });
 
     it('falls back to a default box for a zero-dimension image', async () => {
-        restoreImage();
-        restoreImage = mockImageLoad({ width: 0, height: 0 });
+        remockImage({ width: 0, height: 0 });
         const { state } = setup();
         await settle();
         expect(state().size).toEqual({ x: 300, y: 200 });
     });
 
     it('falls back when the image fails to load', async () => {
-        restoreImage();
-        restoreImage = mockImageLoad({ width: 400, height: 400, fail: true });
+        remockImage({ width: 400, height: 400, fail: true });
         const { state } = setup();
         await settle();
         expect(state().size).toEqual({ x: 300, y: 200 });
@@ -166,13 +144,12 @@ describe('cursor size', () => {
 
     it('shrinks on a downward wheel and reports the change', async () => {
         const onCursorSizeChange = vi.fn();
-        const { container, state } = setup({ cursorSize: 10, onCursorSizeChange });
+        const { cursorCanvas, state } = setup({ cursorSize: 10, onCursorSizeChange });
         await settle();
 
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
         const evt = new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true });
         act(() => {
-            cursorCanvas.dispatchEvent(evt);
+            cursorCanvas().dispatchEvent(evt);
         });
 
         expect(state().cursorSize).toBe(9);
@@ -182,12 +159,11 @@ describe('cursor size', () => {
 
     it('grows on an upward wheel', async () => {
         const onCursorSizeChange = vi.fn();
-        const { container, state } = setup({ cursorSize: 10, onCursorSizeChange });
+        const { cursorCanvas, state } = setup({ cursorSize: 10, onCursorSizeChange });
         await settle();
 
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
         act(() => {
-            cursorCanvas.dispatchEvent(new WheelEvent('wheel', { deltaY: -100, cancelable: true, bubbles: true }));
+            cursorCanvas().dispatchEvent(new WheelEvent('wheel', { deltaY: -100, cancelable: true, bubbles: true }));
         });
 
         expect(state().cursorSize).toBe(11);
@@ -195,24 +171,22 @@ describe('cursor size', () => {
 
     it('never shrinks below one pixel', async () => {
         const onCursorSizeChange = vi.fn();
-        const { container, state } = setup({ cursorSize: 1, onCursorSizeChange });
+        const { cursorCanvas, state } = setup({ cursorSize: 1, onCursorSizeChange });
         await settle();
 
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
         act(() => {
-            cursorCanvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true }));
+            cursorCanvas().dispatchEvent(new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true }));
         });
 
         expect(state().cursorSize).toBe(1);
     });
 
     it('leaves the wheel alone when no size callback is supplied', async () => {
-        const { container, state } = setup({ cursorSize: 10 });
+        const { cursorCanvas, state } = setup({ cursorSize: 10 });
         await settle();
 
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
         act(() => {
-            cursorCanvas.dispatchEvent(new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true }));
+            cursorCanvas().dispatchEvent(new WheelEvent('wheel', { deltaY: 100, cancelable: true, bubbles: true }));
         });
 
         expect(state().cursorSize).toBe(10);
@@ -220,12 +194,11 @@ describe('cursor size', () => {
 
     it('defers to the zoom handler when ctrl is held', async () => {
         const onCursorSizeChange = vi.fn();
-        const { container, state } = setup({ cursorSize: 10, onCursorSizeChange });
+        const { cursorCanvas, state } = setup({ cursorSize: 10, onCursorSizeChange });
         await settle();
 
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
         act(() => {
-            cursorCanvas.dispatchEvent(
+            cursorCanvas().dispatchEvent(
                 new WheelEvent('wheel', { deltaY: 100, ctrlKey: true, cancelable: true, bubbles: true }),
             );
         });
@@ -241,27 +214,25 @@ describe('drawing', () => {
         });
 
     it('flags drawing on mouse down and clears it on mouse up', async () => {
-        const { container, state, onDrawingChange } = setup();
+        const { cursorCanvas, state, onDrawingChange } = setup();
         await settle();
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
 
-        mouse(cursorCanvas, 'mousedown');
+        mouse(cursorCanvas(), 'mousedown');
         expect(state().isDrawing).toBe(true);
         expect(onDrawingChange).toHaveBeenCalledWith(true);
 
-        mouse(cursorCanvas, 'mouseup');
+        mouse(cursorCanvas(), 'mouseup');
         expect(state().isDrawing).toBe(false);
         expect(onDrawingChange).toHaveBeenCalledWith(false);
     });
 
     it('reports the mask after a stroke finishes', async () => {
         const onMaskChange = vi.fn();
-        const { container } = setup({ onMaskChange });
+        const { cursorCanvas } = setup({ onMaskChange });
         await settle();
-        const cursorCanvas = container.querySelectorAll('canvas')[2] as HTMLCanvasElement;
 
-        mouse(cursorCanvas, 'mousedown');
-        mouse(cursorCanvas, 'mouseup');
+        mouse(cursorCanvas(), 'mousedown');
+        mouse(cursorCanvas(), 'mouseup');
         await settle();
 
         expect(onMaskChange).toHaveBeenCalled();
@@ -392,8 +363,7 @@ describe('initialMask', () => {
 
     it('survives a mask that fails to load', async () => {
         const error = vi.spyOn(console, 'error').mockImplementation(() => {});
-        restoreImage();
-        restoreImage = mockImageLoad({ width: 100, height: 100, fail: true });
+        remockImage({ width: 100, height: 100, fail: true });
 
         expect(() => setup({ initialMask: SRC })).not.toThrow();
         await settle();
@@ -445,9 +415,8 @@ describe('mask colour', () => {
 
 describe('changing src', () => {
     it('keeps the newest image when two loads overlap', async () => {
-        restoreImage();
         // The superseded load resolves *after* the one that replaced it.
-        restoreImage = mockImageLoad((src) =>
+        remockImage((src) =>
             src.includes('big') ? { width: 2480, height: 1240, delay: 100 } : { width: 400, height: 400 },
         );
 

@@ -1,7 +1,9 @@
 import React from 'react';
 import type { Point, Transform } from '../internal/geometry';
+import type { KeyboardScope } from '../internal/keyboard';
 import { acquireBodyPanCursor } from '../internal/bodyPanCursor';
 import { calculateBaseScale, clampPan, toImageCoordinates } from '../internal/geometry';
+import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 
 /** How far a single zoomIn/zoomOut step moves the scale. */
@@ -9,9 +11,6 @@ const ZOOM_STEP = 0.2;
 
 /** Content size has to move by more than this before the view re-fits itself. */
 const REFIT_THRESHOLD = 5;
-
-/** Where keyboard shortcuts are listened for. See `UseMaskEditorProps.keyboardScope`. */
-export type KeyboardScope = 'window' | 'container';
 
 export interface ZoomPanOptions {
     initialScale?: number;
@@ -44,23 +43,6 @@ export interface ZoomPanActions {
 }
 
 const CENTERED: Transform = { scale: 1, translateX: 0, translateY: 0 };
-
-const isFormField = (target: EventTarget | null): boolean => {
-    const el = target as HTMLElement | null;
-    const tag = el?.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(el?.isContentEditable);
-};
-
-/**
- * Whether a key press belongs to this editor.
- *
- * Listeners stay on `window` in both modes — `keyup` and `blur` have to fire even after
- * focus has left, or a Space release goes unseen and the editor stays stuck in pan mode.
- * Only `keydown` is filtered. `Node.contains` reports true for the node itself, so the
- * container being the focused element counts as in scope.
- */
-export const isKeyboardInScope = (scope: KeyboardScope, container: HTMLElement | null): boolean =>
-    scope === 'window' || Boolean(container?.contains(document.activeElement));
 
 export function useZoomPan(
     containerRef: React.RefObject<HTMLDivElement | null>,
@@ -97,9 +79,11 @@ export function useZoomPan(
 
     // Mirrors of the state above. Event handlers and observers read these instead of closing
     // over the rendered values, which is what lets their effects attach exactly once.
-    const scaleRef = React.useRef(scale);
-    const transformRef = React.useRef(transform);
-    const baseScaleRef = React.useRef(baseScale);
+    // `useLatest` re-syncs each on commit, so a write that bypassed `commitScale` and friends
+    // (the raw `setScale` handed to consumers) still lands.
+    const scaleRef = useLatest(scale);
+    const transformRef = useLatest(transform);
+    const baseScaleRef = useLatest(baseScale);
     const isPanningRef = React.useRef(false);
     const isSpaceKeyDownRef = React.useRef(false);
     const isZoomKeyDownRef = React.useRef(false);
@@ -108,16 +92,8 @@ export function useZoomPan(
     // back on the element on every single mousemove.
     const lastMousePositionRef = React.useRef<Point>({ x: 0, y: 0 });
     const releasePanCursorRef = React.useRef<(() => void) | null>(null);
-    const lastContentSizeRef = React.useRef<Point>({ x: 0, y: 0 });
-    const isInitialRender = React.useRef(true);
-
-    // `setScale` is handed to consumers raw, so the ref has to survive a write that did not
-    // go through `commitScale`.
-    React.useLayoutEffect(() => {
-        scaleRef.current = scale;
-        transformRef.current = transform;
-        baseScaleRef.current = baseScale;
-    });
+    // `null` until the first successful fit, which is what makes that first fit unconditional.
+    const lastContentSizeRef = React.useRef<Point | null>(null);
 
     // Single write paths. Updating the ref eagerly means two actions in the same tick see
     // each other's result, and keeps side effects out of the state updaters entirely.
@@ -138,21 +114,26 @@ export function useZoomPan(
 
     const effectiveScale = baseScale * scale;
 
+    /**
+     * Maps a viewport point into image space against a rect the caller already holds.
+     * `getBoundingClientRect` forces a layout read, so anything on a pointer or wheel path
+     * should read the rect once and pass it here rather than going through
+     * {@link getImageCoordinates}.
+     */
+    const toImageCoordinatesWithRect = React.useCallback(
+        (clientX: number, clientY: number, rect: DOMRect): Point =>
+            toImageCoordinates(clientX, clientY, rect, contentSize, transformRef.current, baseScaleRef.current),
+        [contentSize],
+    );
+
     const getImageCoordinates = React.useCallback(
         (clientX: number, clientY: number): Point => {
             const container = containerRef.current;
             if (!container) return { x: 0, y: 0 };
 
-            return toImageCoordinates(
-                clientX,
-                clientY,
-                container.getBoundingClientRect(),
-                contentSize,
-                transformRef.current,
-                baseScaleRef.current,
-            );
+            return toImageCoordinatesWithRect(clientX, clientY, container.getBoundingClientRect());
         },
-        [containerRef, contentSize],
+        [containerRef, toImageCoordinatesWithRect],
     );
 
     /** Re-fits the content to the container and recentres it. */
@@ -162,11 +143,11 @@ export function useZoomPan(
 
         lastContentSizeRef.current = { ...contentSize };
 
-        setBaseScale(calculateBaseScale(container, contentSize));
-        baseScaleRef.current = calculateBaseScale(container, contentSize);
+        // Once: each call forces a style recalc via `getComputedStyle`.
+        const nextBaseScale = calculateBaseScale(container, contentSize);
+        setBaseScale(nextBaseScale);
+        baseScaleRef.current = nextBaseScale;
         commitTransform({ ...CENTERED });
-
-        isInitialRender.current = false;
 
         notifyScaleChange(1);
         notifyPanChange(0, 0);
@@ -181,32 +162,30 @@ export function useZoomPan(
         // Read through the ref: closing over `recalculate` directly meant that after the
         // first resize the observer kept re-fitting to the *original* content size.
         const observer = new ResizeObserver(() => {
-            isInitialRender.current = true;
+            lastContentSizeRef.current = null;
             recalculateRef.current();
         });
 
         observer.observe(container);
         return () => observer.disconnect();
-    }, [containerRef, recalculateRef]);
+    }, [containerRef]);
 
     React.useLayoutEffect(() => {
         if (!containerRef.current || contentSize.x === 0 || contentSize.y === 0) return;
 
         const last = lastContentSizeRef.current;
         const moved =
-            Math.abs(last.x - contentSize.x) > REFIT_THRESHOLD || Math.abs(last.y - contentSize.y) > REFIT_THRESHOLD;
+            !last ||
+            Math.abs(last.x - contentSize.x) > REFIT_THRESHOLD ||
+            Math.abs(last.y - contentSize.y) > REFIT_THRESHOLD;
 
-        if (isInitialRender.current || moved) recalculateBaseScaleAndCenter();
+        if (moved) recalculateBaseScaleAndCenter();
     }, [containerRef, contentSize, recalculateBaseScaleAndCenter]);
 
     /** Zooms so the content under the cursor stays under the cursor. */
     const zoomToPoint = React.useCallback(
-        (newScale: number, pointX: number, pointY: number) => {
-            const container = containerRef.current;
-            if (!container) return;
-
-            const rect = container.getBoundingClientRect();
-            const under = getImageCoordinates(rect.left + pointX, rect.top + pointY);
+        (newScale: number, pointX: number, pointY: number, rect: DOMRect) => {
+            const under = toImageCoordinatesWithRect(rect.left + pointX, rect.top + pointY, rect);
 
             const cursorOffsetX = pointX - rect.width / 2;
             const cursorOffsetY = pointY - rect.height / 2;
@@ -221,15 +200,7 @@ export function useZoomPan(
             notifyScaleChange(newScale);
             notifyPanChange(translateX, translateY);
         },
-        [
-            containerRef,
-            contentSize,
-            getImageCoordinates,
-            commitScale,
-            commitTransform,
-            notifyScaleChange,
-            notifyPanChange,
-        ],
+        [contentSize, toImageCoordinatesWithRect, commitScale, commitTransform, notifyScaleChange, notifyPanChange],
     );
 
     const zoomToPointRef = useLatest(zoomToPoint);
@@ -249,13 +220,13 @@ export function useZoomPan(
             const newScale = Math.max(minScale, Math.min(maxScale, current - e.deltaY * 0.01));
 
             if (newScale !== current) {
-                zoomToPointRef.current(newScale, e.clientX - rect.left, e.clientY - rect.top);
+                zoomToPointRef.current(newScale, e.clientX - rect.left, e.clientY - rect.top, rect);
             }
         };
 
         container.addEventListener('wheel', handleWheel, { passive: false });
         return () => container.removeEventListener('wheel', handleWheel);
-    }, [containerRef, enableWheelZoom, minScale, maxScale, zoomToPointRef]);
+    }, [containerRef, enableWheelZoom, minScale, maxScale]);
 
     /**
      * Steps the zoom. Both the scale and the transform are written synchronously: deferring
@@ -359,7 +330,7 @@ export function useZoomPan(
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [containerRef, keyboardScopeRef, setPanning, releasePanCursor]);
+    }, [containerRef, setPanning, releasePanCursor]);
 
     const canPan = transform.scale > 1;
 
@@ -424,5 +395,7 @@ export function useZoomPan(
         [resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut],
     );
 
-    return React.useMemo<[ZoomPanState, ZoomPanActions]>(() => [state, actions], [state, actions]);
+    // No memo around the tuple: it is destructured at the call site, so its identity is
+    // never observed.
+    return [state, actions];
 }

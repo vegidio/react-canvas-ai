@@ -2,7 +2,6 @@ import * as React from 'react';
 
 export interface HistoryState {
     imageData: ImageData;
-    timestamp: number;
 }
 
 export interface UseHistoryReturn {
@@ -65,7 +64,7 @@ export function useHistory(
         const previous = stackRef.current;
         // Drop any redo branch we are about to diverge from.
         const entries = previous.entries.slice(0, previous.index + 1);
-        entries.push({ imageData, timestamp: Date.now() });
+        entries.push({ imageData });
 
         const capped = entries.slice(-maxHistorySize);
         commit({ entries: capped, index: capped.length - 1 });

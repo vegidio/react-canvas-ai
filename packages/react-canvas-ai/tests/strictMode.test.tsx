@@ -1,35 +1,20 @@
 import { StrictMode } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
 import { MaskEditor } from '../src/components/MaskEditor';
-import { mockImageLoad } from './helpers/image';
+import { canvases } from './helpers/canvas';
+import { installImageMock, SRC, settle } from './helpers/image';
 
 /**
  * StrictMode double-invokes effects and state updaters. Every bug this suite guards against
  * was a side effect running from inside an updater, or a subscription that did not clean up.
  */
-const SRC = 'data:image/png;base64,iVBORw0KGgo=';
-
-let restoreImage: () => void;
-
 beforeEach(() => {
     vi.useFakeTimers();
-    restoreImage = mockImageLoad({ width: 400, height: 200 });
 });
 
-afterEach(() => {
-    restoreImage();
-});
-
-async function settle() {
-    for (let i = 0; i < 5; i++) {
-        await act(async () => {
-            await Promise.resolve();
-            vi.advanceTimersByTime(200);
-        });
-    }
-}
+installImageMock({ width: 400, height: 200 });
 
 function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
     const api: { current: MaskEditorCanvasRef | null } = { current: null };
@@ -63,7 +48,7 @@ describe('StrictMode', () => {
         const { container } = renderEditor({ onMaskChange });
         await settle();
 
-        const cursorCanvas = container.querySelector('.react-mask-editor-cursor-canvas') as HTMLCanvasElement;
+        const cursorCanvas = canvases(container).cursor;
         onMaskChange.mockClear();
 
         fireEvent.mouseDown(cursorCanvas, { buttons: 1 });

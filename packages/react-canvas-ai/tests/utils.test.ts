@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { hexToRgb, simpleDebounce, toMask } from '../src/utils';
+import { hexToRgb, toMask } from '../src/utils';
 import { makeSeededCanvas } from './helpers/canvas';
 
 describe('toMask', () => {
@@ -127,70 +127,5 @@ describe('hexToRgb', () => {
 
     it('falls back to black when nothing matches', () => {
         expect(hexToRgb('')).toEqual([0, 0, 0]);
-    });
-});
-
-describe('simpleDebounce', () => {
-    it('does not fire before the delay elapses', () => {
-        vi.useFakeTimers();
-        const fn = vi.fn();
-        simpleDebounce(fn, 300)();
-
-        vi.advanceTimersByTime(299);
-        expect(fn).not.toHaveBeenCalled();
-        vi.advanceTimersByTime(1);
-        expect(fn).toHaveBeenCalledTimes(1);
-    });
-
-    it('coalesces rapid calls and keeps the last arguments', () => {
-        vi.useFakeTimers();
-        const fn = vi.fn((_value: string) => {});
-        const debounced = simpleDebounce(fn, 300);
-
-        debounced('a');
-        debounced('b');
-        debounced('c');
-        vi.advanceTimersByTime(300);
-
-        expect(fn).toHaveBeenCalledTimes(1);
-        expect(fn).toHaveBeenCalledWith('c');
-    });
-
-    it('restarts the timer on every call', () => {
-        vi.useFakeTimers();
-        const fn = vi.fn();
-        const debounced = simpleDebounce(fn, 300);
-
-        debounced();
-        vi.advanceTimersByTime(299);
-        debounced();
-        vi.advanceTimersByTime(299);
-        expect(fn).not.toHaveBeenCalled();
-
-        vi.advanceTimersByTime(1);
-        expect(fn).toHaveBeenCalledTimes(1);
-    });
-
-    it('cancel() prevents a pending call', () => {
-        vi.useFakeTimers();
-        const fn = vi.fn();
-        const debounced = simpleDebounce(fn, 300);
-
-        debounced();
-        debounced.cancel();
-        vi.advanceTimersByTime(1000);
-        expect(fn).not.toHaveBeenCalled();
-    });
-
-    it('cancel() after firing is a no-op', () => {
-        vi.useFakeTimers();
-        const fn = vi.fn();
-        const debounced = simpleDebounce(fn, 300);
-
-        debounced();
-        vi.advanceTimersByTime(300);
-        expect(() => debounced.cancel()).not.toThrow();
-        vi.advanceTimersByTime(1000);
-        expect(fn).toHaveBeenCalledTimes(1);
     });
 });

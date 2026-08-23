@@ -1,0 +1,26 @@
+name: Set up toolchain
+description: pnpm, Node from .nvmrc with a pnpm cache, and a frozen-lockfile install.
+# Assumes the repo is already checked out: a local action cannot be resolved before that.
+
+inputs:
+  registry-url:
+    description: npm registry to configure for publishing. Omit unless the job publishes.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Set up pnpm
+      uses: pnpm/action-setup@v4
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version-file: '.nvmrc'
+        cache: 'pnpm'
+        registry-url: ${{ inputs.registry-url }}
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

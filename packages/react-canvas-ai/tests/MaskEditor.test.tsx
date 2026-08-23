@@ -1,21 +1,12 @@
 import { createRef } from 'react';
 import { fireEvent, render } from '@testing-library/react';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
 import { MaskEditor } from '../src/components/MaskEditor';
-import { mockImageLoad } from './helpers/image';
+import { canvases } from './helpers/canvas';
+import { installImageMock, SRC } from './helpers/image';
 
-const SRC = 'data:image/png;base64,iVBORw0KGgo=';
-
-let restoreImage: () => void;
-
-beforeEach(() => {
-    restoreImage = mockImageLoad({ width: 400, height: 200 });
-});
-
-afterEach(() => {
-    restoreImage();
-});
+installImageMock({ width: 400, height: 200 });
 
 function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
     const onDrawingChange = vi.fn();
@@ -23,12 +14,6 @@ function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = 
     const root = utils.container.querySelector('.react-mask-editor-outer') as HTMLElement;
     return { ...utils, root, onDrawingChange };
 }
-
-const canvases = (root: HTMLElement) => ({
-    base: root.querySelector('.react-mask-editor-base-canvas') as HTMLCanvasElement,
-    mask: root.querySelector('.react-mask-editor-mask-canvas') as HTMLCanvasElement,
-    cursor: root.querySelector('.react-mask-editor-cursor-canvas') as HTMLCanvasElement,
-});
 
 describe('structure', () => {
     it('renders the layer skeleton with all three canvases', () => {

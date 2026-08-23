@@ -1,13 +1,15 @@
 import React from 'react';
 import type { Point, Transform } from '../internal/geometry';
+import type { KeyboardScope } from '../internal/keyboard';
 import type { HistoryState } from './useHistory';
-import type { KeyboardScope } from './useZoomPan';
 import { drawCursorCircle, paintMaskDot, recolorMask } from '../internal/canvas';
+import { isFormField, isKeyboardInScope } from '../internal/keyboard';
+import { useCanvas2dContext } from '../internal/useCanvas2dContext';
 import { useEventCallback, useLatest } from '../internal/useLatest';
-import { hexToRgb, simpleDebounce, toMask } from '../utils';
+import { hexToRgb, toMask } from '../utils';
 import { useHistory } from './useHistory';
 import { useImageLoader } from './useImageLoader';
-import { isKeyboardInScope, useZoomPan } from './useZoomPan';
+import { useZoomPan } from './useZoomPan';
 
 /** The CSS `mix-blend-mode` values the mask layer supports. */
 export type MaskBlendMode =
@@ -170,12 +172,6 @@ const MASK_DEBOUNCE_MS = 300;
 
 const MAX_HISTORY_SIZE = 50;
 
-const isFormField = (target: EventTarget | null): boolean => {
-    const el = target as HTMLElement | null;
-    const tag = el?.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(el?.isContentEditable);
-};
-
 export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
     const {
         src,
@@ -208,8 +204,11 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
     const containerRef = React.useRef<HTMLDivElement>(null);
     const initialMaskAppliedRef = React.useRef<string | null>(null);
 
-    const [maskContext, setMaskContext] = React.useState<CanvasRenderingContext2D | null>(null);
-    const [cursorContext, setCursorContext] = React.useState<CanvasRenderingContext2D | null>(null);
+    // Only the mask layer is ever read back (history snapshots, recolouring, `toMask`), so it
+    // is the only one that wants `willReadFrequently`. The cursor layer is repainted on every
+    // pointer move and must stay on the GPU path.
+    const maskContext = useCanvas2dContext(maskCanvasRef, { willReadFrequently: true });
+    const cursorContext = useCanvas2dContext(cursorCanvasRef);
 
     const [isDrawing, setIsDrawing] = React.useState(false);
     const [currentCursorSize, setCursorSize] = React.useState(initialCursorSize);
@@ -248,6 +247,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
     const keyboardScopeRef = useLatest(keyboardScope);
 
     const notifyCursorSizeChange = useEventCallback<[number]>(onCursorSizeChange);
+    const notifyDrawingChange = useEventCallback<[boolean]>(onDrawingChange);
 
     /** Reports the current mask, skipping the pixel work when nobody is listening. */
     const reportMask = React.useCallback(() => {
@@ -259,23 +259,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         } catch (error) {
             console.error('[MaskEditor] onMaskChange callback threw:', error);
         }
-    }, [onMaskChangeRef]);
-
-    // Stable, so an inline `onMaskChange` no longer rebuilds the debounce every render.
-    const debouncedReportMask = React.useMemo(() => simpleDebounce(reportMask, MASK_DEBOUNCE_MS), [reportMask]);
-
-    // Canvas contexts. `willReadFrequently` matters: every mask report reads the full buffer.
-    React.useLayoutEffect(() => {
-        if (maskCanvasRef.current && !maskContext) {
-            setMaskContext(maskCanvasRef.current.getContext('2d', { willReadFrequently: true }));
-        }
-    }, [maskContext]);
-
-    React.useLayoutEffect(() => {
-        if (cursorCanvasRef.current && !cursorContext) {
-            setCursorContext(cursorCanvasRef.current.getContext('2d', { willReadFrequently: true }));
-        }
-    }, [cursorContext]);
+    }, []);
 
     /**
      * Sizes the three layers and paints the image.
@@ -297,7 +281,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         const canvas = canvasRef.current;
         if (!image || !canvas) return;
 
-        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
         ctx.clearRect(0, 0, size.x, size.y);
@@ -343,17 +327,38 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
             img.onload = null;
             img.onerror = null;
         };
-    }, [initialMask, maskContext, size, historyRef, reportMask]);
+    }, [initialMask, maskContext, size, reportMask]);
 
     React.useEffect(() => {
         setCursorSize(initialCursorSize);
     }, [initialCursorSize]);
 
-    // Recolour existing strokes when the mask colour changes.
+    // Recolour existing strokes when the mask colour changes. Guarded on the colour actually
+    // changing: `recolorMask` walks every pixel, and without this it also ran once at mount
+    // against a blank canvas for no visual effect.
+    const appliedMaskColorRef = React.useRef<string | null>(null);
     React.useEffect(() => {
         if (!maskContext || size.x === 0 || size.y === 0) return;
+        if (appliedMaskColorRef.current === maskColor) return;
+
+        appliedMaskColorRef.current = maskColor;
         recolorMask(maskContext, size, hexToRgb(maskColor));
     }, [maskContext, maskColor, size]);
+
+    /**
+     * Stamps one brush dab for a pointer event. Both the freehand move handler and mousedown
+     * paint identically — the secondary button or shift erases back to the mask background —
+     * so the decision lives here rather than being repeated at each call site.
+     */
+    const paintDab = React.useCallback(
+        (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
+            if (!maskContext) return;
+            const color = evt.buttons > 1 || evt.shiftKey ? ERASE_COLOR : maskColorRef.current;
+            paintMaskDot(maskContext, x, y, cursorSizeRef.current, color);
+        },
+        [maskContext],
+    );
+    const paintDabRef = useLatest(paintDab);
 
     const hasCursorSizeCallback = Boolean(onCursorSizeChange);
 
@@ -380,10 +385,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
             const { x, y } = getImageCoordinatesRef.current(evt.clientX, evt.clientY);
             paintCursor(x, y, cursorSizeRef.current);
 
-            if (maskContext && evt.buttons > 0 && !isSpaceKeyDownRef.current) {
-                const color = evt.buttons > 1 || evt.shiftKey ? ERASE_COLOR : maskColorRef.current;
-                paintMaskDot(maskContext, x, y, cursorSizeRef.current, color);
-            }
+            if (evt.buttons > 0 && !isSpaceKeyDownRef.current) paintDabRef.current(x, y, evt);
         };
 
         const handleWheel = (evt: WheelEvent) => {
@@ -409,19 +411,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
             cursorCanvas.removeEventListener('mousemove', handleMouseMove);
             if (hasCursorSizeCallback) cursorCanvas.removeEventListener('wheel', handleWheel);
         };
-    }, [
-        cursorContext,
-        maskContext,
-        hasCursorSizeCallback,
-        notifyCursorSizeChange,
-        getImageCoordinatesRef,
-        isPanningRef,
-        isSpaceKeyDownRef,
-        cursorSizeRef,
-        maskColorRef,
-        maskOpacityRef,
-        sizeRef,
-    ]);
+    }, [cursorContext, hasCursorSizeCallback, notifyCursorSizeChange]);
 
     const handleMouseDown = React.useCallback(
         (e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -429,14 +419,11 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
             if (isPanningRef.current || isSpaceKeyDownRef.current) return;
 
             const { x, y } = getImageCoordinatesRef.current(e.nativeEvent.clientX, e.nativeEvent.clientY);
-            if (maskContext) {
-                const color = e.buttons > 1 || e.shiftKey ? ERASE_COLOR : maskColorRef.current;
-                paintMaskDot(maskContext, x, y, cursorSizeRef.current, color);
-            }
+            paintDab(x, y, e.nativeEvent);
 
             setIsDrawing(true);
         },
-        [maskContext, isPanningRef, isSpaceKeyDownRef, getImageCoordinatesRef, maskColorRef, cursorSizeRef],
+        [paintDab],
     );
 
     const handleMouseUp = React.useCallback(
@@ -450,34 +437,36 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
             historyRef.current.saveToHistory();
             reportMask();
         },
-        [isPanningRef, isSpaceKeyDownRef, historyRef, reportMask],
+        [reportMask],
     );
 
     React.useEffect(() => {
-        onDrawingChange(isDrawing);
-    }, [isDrawing, onDrawingChange]);
+        notifyDrawingChange(isDrawing);
+    }, [isDrawing, notifyDrawingChange]);
 
     // Report a mid-stroke mask so long strokes are not silent for their whole duration.
+    // A plain timer, not a debounce: this fires once when the stroke starts and is cleared
+    // when it ends, so there is no call sequence to coalesce.
     React.useEffect(() => {
         if (!isDrawing) return;
-        debouncedReportMask();
-        return () => debouncedReportMask.cancel();
-    }, [isDrawing, debouncedReportMask]);
+        const timer = setTimeout(reportMask, MASK_DEBOUNCE_MS);
+        return () => clearTimeout(timer);
+    }, [isDrawing, reportMask]);
 
     const undo = React.useCallback(() => {
         historyRef.current.undo();
         reportMask();
-    }, [historyRef, reportMask]);
+    }, [reportMask]);
 
     const redo = React.useCallback(() => {
         historyRef.current.redo();
         reportMask();
-    }, [historyRef, reportMask]);
+    }, [reportMask]);
 
     const clear = React.useCallback(() => {
         historyRef.current.clear();
         reportMask();
-    }, [historyRef, reportMask]);
+    }, [reportMask]);
 
     React.useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
@@ -499,7 +488,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [undo, redo, keyboardScopeRef]);
+    }, [undo, redo]);
 
     return React.useMemo(
         () => ({

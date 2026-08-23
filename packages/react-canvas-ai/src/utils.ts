@@ -60,16 +60,3 @@ export const hexToRgb = (color: string): Rgb => {
         Number.parseInt(full.slice(4, 6), 16),
     ];
 };
-
-export function simpleDebounce<T extends (...args: never[]) => void>(fn: T, wait: number): T & { cancel: () => void } {
-    let timeout: ReturnType<typeof setTimeout> | null = null;
-    const debounced = (...args: Parameters<T>) => {
-        if (timeout) clearTimeout(timeout);
-        timeout = setTimeout(() => fn(...args), wait);
-    };
-    debounced.cancel = () => {
-        if (timeout) clearTimeout(timeout);
-        timeout = null;
-    };
-    return debounced as T & { cancel: () => void };
-}
