@@ -11,6 +11,8 @@ export default defineConfig({
     // that generator automatically because `isolatedDeclarations` is on in tsconfig.
     dts: { sourcemap: true },
     deps: { neverBundle: ['react', 'react-dom', 'react/jsx-runtime'] },
-    exports: true,
+    // The exports map is hand-maintained: there is one entry, it never changes, and an
+    // explicit "types" condition per format is clearer than relying on file adjacency.
+    exports: false,
     publint: true,
 });
