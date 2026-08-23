@@ -14,7 +14,7 @@ let savedUserSelect = '';
  * Takes the page cursor for a pan. Returns an idempotent release function — calling it more
  * than once, or after a blur has already released, is a no-op.
  */
-export function acquireBodyPanCursor(): () => void {
+export const acquireBodyPanCursor = (): (() => void) => {
     if (holders === 0) {
         savedCursor = document.body.style.cursor;
         savedUserSelect = document.body.style.userSelect;
@@ -33,4 +33,4 @@ export function acquireBodyPanCursor(): () => void {
             document.body.style.userSelect = savedUserSelect;
         }
     };
-}
+};

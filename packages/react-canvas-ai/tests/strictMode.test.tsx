@@ -16,7 +16,7 @@ beforeEach(() => {
 
 installImageMock({ width: 400, height: 200 });
 
-function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
+const renderEditor = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
     const api: { current: MaskEditorCanvasRef | null } = { current: null };
 
     const utils = render(
@@ -26,7 +26,7 @@ function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = 
     );
 
     return { ...utils, api };
-}
+};
 
 describe('StrictMode', () => {
     it('reports one scale change per zoom step', async () => {

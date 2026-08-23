@@ -11,7 +11,7 @@ const ENTRY_BYTES = 64;
  * A minimal 2d context stub whose snapshots are distinguishable by id, and which reports a
  * fixed byte size so the history byte cap can be exercised.
  */
-function makeContext() {
+const makeContext = () => {
     let next = 0;
     return {
         getImageData: vi.fn(() => ({ id: next++, data: new Uint8ClampedArray(ENTRY_BYTES) }) as unknown as ImageData),
@@ -22,7 +22,7 @@ function makeContext() {
         putImageData: ReturnType<typeof vi.fn>;
         clearRect: ReturnType<typeof vi.fn>;
     };
-}
+};
 
 let ctx: ReturnType<typeof makeContext>;
 beforeEach(() => {
@@ -46,7 +46,7 @@ describe('useHistory', () => {
     });
 
     it('records nothing without a context', () => {
-        const { result } = renderHook(() => useHistory(null, SIZE));
+        const { result } = renderHook(() => useHistory(undefined, SIZE));
         act(() => result.current.saveToHistory());
         expect(result.current.history).toEqual([]);
     });

@@ -9,7 +9,7 @@ import { vi } from 'vitest';
  * buffer is a snapshot, not a view, so writing to it must not touch the source. `pixels`
  * stays readable through `sourcePixels()` so a test can prove exactly that.
  */
-export function makeSeededCanvas(width: number, height: number, pixels: number[]) {
+export const makeSeededCanvas = (width: number, height: number, pixels: number[]) => {
     const source = Uint8ClampedArray.from(pixels);
 
     const ctx = {
@@ -33,13 +33,13 @@ export function makeSeededCanvas(width: number, height: number, pixels: number[]
     } as unknown as HTMLCanvasElement;
 
     return { canvas, ctx, sourcePixels: () => [...source] };
-}
+};
 
 /**
  * Intercepts the off-screen canvas `toMask` builds to threshold into, so a test can read
  * the pixels that were actually exported. Returns a restore function.
  */
-export function captureScratchCanvas() {
+export const captureScratchCanvas = () => {
     const exported: number[][] = [];
     const original = document.createElement.bind(document);
 
@@ -60,20 +60,22 @@ export function captureScratchCanvas() {
     }) as typeof document.createElement);
 
     return { exported, scratchCtx, restore: () => spy.mockRestore() };
-}
+};
 
 /**
  * The three layers of a rendered `MaskEditor`, by class name rather than document order —
  * an index-based lookup breaks silently the day a fourth layer is added.
  */
-export function canvases(root: HTMLElement): {
+export const canvases = (
+    root: HTMLElement,
+): {
     base: HTMLCanvasElement;
     mask: HTMLCanvasElement;
     cursor: HTMLCanvasElement;
-} {
+} => {
     return {
         base: root.querySelector('.react-mask-editor-base-canvas') as HTMLCanvasElement,
         mask: root.querySelector('.react-mask-editor-mask-canvas') as HTMLCanvasElement,
         cursor: root.querySelector('.react-mask-editor-cursor-canvas') as HTMLCanvasElement,
     };
-}
+};

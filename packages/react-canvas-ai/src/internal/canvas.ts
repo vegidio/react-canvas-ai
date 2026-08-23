@@ -6,17 +6,17 @@ export const FALLBACK_SIZE: Point = { x: 300, y: 200 };
 /** Below this the editor is too small to paint into. */
 const MIN_SIZE = 50;
 
-export interface CursorCircleOptions {
+export type CursorCircleOptions = {
     size: Point;
     x: number;
     y: number;
     radius: number;
     color: string;
     opacity: number;
-}
+};
 
 /** Repaints the cursor layer with the brush outline at the given position. */
-export function drawCursorCircle(ctx: CanvasRenderingContext2D, options: CursorCircleOptions): void {
+export const drawCursorCircle = (ctx: CanvasRenderingContext2D, options: CursorCircleOptions): void => {
     const { size, x, y, radius, color, opacity } = options;
 
     ctx.clearRect(0, 0, size.x, size.y);
@@ -28,21 +28,27 @@ export function drawCursorCircle(ctx: CanvasRenderingContext2D, options: CursorC
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
-}
+};
 
 /** Stamps a single filled brush dab onto the mask layer. */
-export function paintMaskDot(ctx: CanvasRenderingContext2D, x: number, y: number, radius: number, color: string): void {
+export const paintMaskDot = (
+    ctx: CanvasRenderingContext2D,
+    x: number,
+    y: number,
+    radius: number,
+    color: string,
+): void => {
     ctx.beginPath();
     ctx.fillStyle = color;
     ctx.arc(x, y, radius, 0, Math.PI * 2);
     ctx.fill();
-}
+};
 
 /**
  * Repaints every non-background pixel of the mask in `rgb`. Background is identified by a
  * red channel of 255, which is what the white fill the mask starts from leaves behind.
  */
-export function recolorMask(ctx: CanvasRenderingContext2D, size: Point, rgb: readonly number[]): void {
+export const recolorMask = (ctx: CanvasRenderingContext2D, size: Point, rgb: readonly number[]): void => {
     const imageData = ctx.getImageData(0, 0, size.x, size.y);
     const data = imageData.data;
 
@@ -54,13 +60,13 @@ export function recolorMask(ctx: CanvasRenderingContext2D, size: Point, rgb: rea
     }
 
     ctx.putImageData(imageData, 0, 0);
-}
+};
 
 /**
  * Picks the canvas size for a loaded image: scaled down to fit the configured bounds while
  * preserving aspect ratio, and never smaller than {@link MIN_SIZE}.
  */
-export function computeTargetSize(img: HTMLImageElement, maxWidth: number, maxHeight: number): Point {
+export const computeTargetSize = (img: HTMLImageElement, maxWidth: number, maxHeight: number): Point => {
     const sourceWidth = img.width || img.naturalWidth;
     const sourceHeight = img.height || img.naturalHeight;
 
@@ -76,4 +82,4 @@ export function computeTargetSize(img: HTMLImageElement, maxWidth: number, maxHe
     }
 
     return { x: Math.max(x, MIN_SIZE), y: Math.max(y, MIN_SIZE) };
-}
+};

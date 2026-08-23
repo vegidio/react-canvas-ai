@@ -1,16 +1,16 @@
-import React from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { Point } from '../internal/geometry';
 import { computeTargetSize, FALLBACK_SIZE } from '../internal/canvas';
 import { loadImage } from '../internal/loadImage';
 
-export interface UseImageLoaderReturn {
-    /** The decoded image, or null while loading and after a failure. */
-    image: HTMLImageElement | null;
+export type UseImageLoaderReturn = {
+    /** The decoded image, or `undefined` while loading and after a failure. */
+    image?: HTMLImageElement;
     /** Canvas dimensions for this image, fitted to the configured bounds. */
     size: Point;
     /** Bumped whenever a new image lands, so the base canvas can be remounted. */
     key: number;
-}
+};
 
 /**
  * Owns the `src` -> decoded image -> canvas size pipeline.
@@ -18,17 +18,17 @@ export interface UseImageLoaderReturn {
  * Load and fit are separate effects so that changing `maxWidth`/`maxHeight` re-fits the
  * image already in hand rather than refetching it.
  */
-export function useImageLoader(
+export const useImageLoader = (
     src: string,
     maxWidth: number,
     maxHeight: number,
     crossOrigin?: string,
-): UseImageLoaderReturn {
-    const [image, setImage] = React.useState<HTMLImageElement | null>(null);
-    const [size, setSize] = React.useState<Point>({ x: 0, y: 0 });
-    const [key, setKey] = React.useState(0);
+): UseImageLoaderReturn => {
+    const [image, setImage] = useState<HTMLImageElement | undefined>(undefined);
+    const [size, setSize] = useState<Point>({ x: 0, y: 0 });
+    const [key, setKey] = useState(0);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!src) return;
 
         // Without this, a superseded load could still resolve and overwrite the image that
@@ -45,7 +45,7 @@ export function useImageLoader(
             .catch(() => {
                 if (cancelled) return;
                 // Keep the editor visible so the failure is obvious in place.
-                setImage(null);
+                setImage(undefined);
                 setSize({ ...FALLBACK_SIZE });
             });
 
@@ -55,10 +55,10 @@ export function useImageLoader(
         };
     }, [src, crossOrigin]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         if (!image) return;
         setSize(computeTargetSize(image, maxWidth, maxHeight));
     }, [image, maxWidth, maxHeight]);
 
-    return React.useMemo(() => ({ image, size, key }), [image, size, key]);
-}
+    return useMemo(() => ({ image, size, key }), [image, size, key]);
+};

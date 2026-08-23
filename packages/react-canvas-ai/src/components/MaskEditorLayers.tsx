@@ -1,4 +1,4 @@
-import type React from 'react';
+import type { CSSProperties, FC } from 'react';
 import { useMaskEditorContext } from './MaskEditorProvider';
 
 /**
@@ -15,27 +15,29 @@ import { useMaskEditorContext } from './MaskEditorProvider';
 
 // The layers are stacked absolutely on top of each other. Without this they collapse into
 // normal flow and the editor renders as three images in a column.
-const layerStyle: React.CSSProperties = {
+const layerStyle: CSSProperties = {
     position: 'absolute',
     top: 0,
     left: 0,
     display: 'block',
 };
 
-export interface MaskEditorLayerState {
+export type MaskEditorLayerState = {
     size: { x: number; y: number };
     maskOpacity: number;
-    maskBlendMode: React.CSSProperties['mixBlendMode'];
+    maskBlendMode: CSSProperties['mixBlendMode'];
     /** Cursor to show over the interactive layer. */
-    cursor: React.CSSProperties['cursor'];
-}
+    cursor: CSSProperties['cursor'];
+};
 
 /** The inline styles for each layer, so a custom layout can reuse them verbatim. */
-export function maskEditorLayerStyles(state: MaskEditorLayerState): {
-    base: React.CSSProperties;
-    mask: React.CSSProperties;
-    cursor: React.CSSProperties;
-} {
+export const maskEditorLayerStyles = (
+    state: MaskEditorLayerState,
+): {
+    base: CSSProperties;
+    mask: CSSProperties;
+    cursor: CSSProperties;
+} => {
     const { size, maskOpacity, maskBlendMode, cursor } = state;
     const box = { width: size.x, height: size.y };
 
@@ -52,16 +54,16 @@ export function maskEditorLayerStyles(state: MaskEditorLayerState): {
         },
         cursor: { ...layerStyle, ...box, cursor, zIndex: 3 },
     };
-}
+};
 
-export interface MaskEditorLayersProps {
+export type MaskEditorLayersProps = {
     /** Remounts the base canvas when a new image lands. */
     baseKey?: number;
-    cursor?: React.CSSProperties['cursor'];
-}
+    cursor?: CSSProperties['cursor'];
+};
 
 /** Renders the canvas stack from `MaskEditorProvider`'s context. */
-export const MaskEditorLayers: React.FC<MaskEditorLayersProps> = ({ baseKey, cursor = 'default' }) => {
+export const MaskEditorLayers: FC<MaskEditorLayersProps> = ({ baseKey, cursor = 'default' }) => {
     const {
         canvasRef,
         maskCanvasRef,

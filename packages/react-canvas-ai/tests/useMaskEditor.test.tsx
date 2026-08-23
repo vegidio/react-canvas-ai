@@ -14,9 +14,9 @@ const remockImage = installImageMock({ width: 2480, height: 1240 });
  * Renders the hook against a real mounted DOM tree, because the hook wires refs to live
  * canvas elements and bails out when they are absent.
  */
-function setup(props: Partial<UseMaskEditorProps> = {}) {
+const setup = (props: Partial<UseMaskEditorProps> = {}) => {
     const onDrawingChange = vi.fn();
-    const captured: { current: ReturnType<typeof useMaskEditor> | null } = { current: null };
+    const captured: { current?: ReturnType<typeof useMaskEditor> } = {};
 
     const Harness = () => {
         const state = useMaskEditor({ src: SRC, onDrawingChange, ...props } as UseMaskEditorProps);
@@ -38,7 +38,7 @@ function setup(props: Partial<UseMaskEditorProps> = {}) {
     const state = () => captured.current as ReturnType<typeof useMaskEditor>;
     const cursorCanvas = () => state().cursorCanvasRef.current as HTMLCanvasElement;
     return { ...utils, state, cursorCanvas, onDrawingChange };
-}
+};
 
 describe('wiring', () => {
     it('starts with empty size and no drawing in progress', () => {

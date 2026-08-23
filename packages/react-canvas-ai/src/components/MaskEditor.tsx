@@ -1,22 +1,23 @@
-import React from 'react';
+import type { CSSProperties, FC, Ref } from 'react';
+import { useId, useImperativeHandle, useMemo } from 'react';
 import type { MaskEditorCanvasRef, UseMaskEditorProps } from '../hooks/useMaskEditor';
 import { useMaskEditor } from '../hooks/useMaskEditor';
 import { maskEditorLayerStyles } from './MaskEditorLayers';
 
 export type { MaskEditorCanvasRef };
 
-export interface MaskEditorProps extends UseMaskEditorProps {
-    canvasRef?: React.Ref<MaskEditorCanvasRef>;
+export type MaskEditorProps = UseMaskEditorProps & {
+    canvasRef?: Ref<MaskEditorCanvasRef>;
     /** Appended to the root element's own class name. */
     className?: string;
     /** Merged over the root element's built-in layout styles. */
-    style?: React.CSSProperties;
-}
+    style?: CSSProperties;
+};
 
 // This component ships no stylesheet: every rule it needs is applied inline, so consumers
 // can `import { MaskEditor }` and be done. The class names below are kept purely as
 // styling hooks for consumers who want to reach in and override something.
-const outerStyle: React.CSSProperties = {
+const outerStyle: CSSProperties = {
     display: 'flex',
     flexDirection: 'column',
     justifyContent: 'flex-start',
@@ -29,7 +30,7 @@ const outerStyle: React.CSSProperties = {
     height: '100%',
 };
 
-const innerStyle: React.CSSProperties = {
+const innerStyle: CSSProperties = {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
@@ -40,7 +41,7 @@ const innerStyle: React.CSSProperties = {
     height: '100%',
 };
 
-const containerStyle: React.CSSProperties = {
+const containerStyle: CSSProperties = {
     display: 'flex',
     justifyContent: 'center',
     alignItems: 'center',
@@ -54,7 +55,7 @@ const containerStyle: React.CSSProperties = {
     overflow: 'hidden',
 };
 
-export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
+export const MaskEditor: FC<MaskEditorProps> = (props) => {
     const { canvasRef: externalMaskCanvasRef, className, style, ...hookProps } = props;
 
     const {
@@ -82,11 +83,11 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
     } = useMaskEditor(hookProps);
 
     // Expose API via ref if provided
-    React.useImperativeHandle(
+    useImperativeHandle(
         externalMaskCanvasRef,
         () => ({
             get maskCanvas() {
-                return maskCanvasRef.current;
+                return maskCanvasRef.current ?? undefined;
             },
             undo,
             redo,
@@ -99,7 +100,7 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
         [maskCanvasRef, undo, redo, clear, resetZoom, setPan, zoomIn, zoomOut],
     );
 
-    const canvasLayerStyle = React.useMemo<React.CSSProperties>(() => {
+    const canvasLayerStyle = useMemo<CSSProperties>(() => {
         return {
             position: 'absolute',
             top: '50%',
@@ -130,7 +131,7 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
     });
 
     // Stable across server and client renders; Math.random() here was a hydration mismatch.
-    const uniqueId = React.useId();
+    const uniqueId = useId();
 
     return (
         <div

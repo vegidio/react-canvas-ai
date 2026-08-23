@@ -1,7 +1,7 @@
-export interface LoadImageOptions {
+export type LoadImageOptions = {
     crossOrigin?: string;
     signal?: AbortSignal;
-}
+};
 
 const abortError = (): DOMException => new DOMException('Image load aborted', 'AbortError');
 
@@ -27,7 +27,7 @@ const fetchAsObjectUrl = async (url: string, signal?: AbortSignal): Promise<stri
  * in-flight fetch and detaches the element's handlers, so a superseded load can never win a
  * race against the one that replaced it.
  */
-export async function loadImage(src: string, options: LoadImageOptions = {}): Promise<HTMLImageElement> {
+export const loadImage = async (src: string, options: LoadImageOptions = {}): Promise<HTMLImageElement> => {
     const { crossOrigin, signal } = options;
 
     if (!src) throw new Error('No image source provided');
@@ -38,7 +38,7 @@ export async function loadImage(src: string, options: LoadImageOptions = {}): Pr
     img.crossOrigin = crossOrigin || 'anonymous';
 
     let resolvedSrc = src;
-    let objectUrl: string | null = null;
+    let objectUrl: string | undefined;
     if (src.startsWith('http')) {
         try {
             objectUrl = await fetchAsObjectUrl(src, signal);
@@ -64,7 +64,7 @@ export async function loadImage(src: string, options: LoadImageOptions = {}): Pr
             img.onerror = null;
             if (objectUrl) {
                 URL.revokeObjectURL(objectUrl);
-                objectUrl = null;
+                objectUrl = undefined;
             }
         };
 
@@ -88,4 +88,4 @@ export async function loadImage(src: string, options: LoadImageOptions = {}): Pr
 
         img.src = resolvedSrc;
     });
-}
+};

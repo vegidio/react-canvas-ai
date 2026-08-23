@@ -8,13 +8,13 @@ import { afterEach, beforeEach, vi } from 'vitest';
  *
  * Returns a restore function.
  */
-export interface MockImage {
+export type MockImage = {
     width: number;
     height: number;
     fail?: boolean;
     /** Milliseconds to wait before firing, for staging a load race. Default: a microtask. */
     delay?: number;
-}
+};
 
 /** Either one response for every source, or a function picking one per source. */
 export type MockImageResolver = MockImage | ((src: string) => MockImage);
@@ -22,7 +22,7 @@ export type MockImageResolver = MockImage | ((src: string) => MockImage);
 /** A 1x1 PNG. Any test that only needs *a* source uses this one. */
 export const SRC = 'data:image/png;base64,iVBORw0KGgo=';
 
-export function mockImageLoad(opts: MockImageResolver): () => void {
+export const mockImageLoad = (opts: MockImageResolver): (() => void) => {
     const original = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
     const resolve = (src: string): MockImage => (typeof opts === 'function' ? opts(src) : opts);
 
@@ -54,7 +54,7 @@ export function mockImageLoad(opts: MockImageResolver): () => void {
     return () => {
         if (original) Object.defineProperty(HTMLImageElement.prototype, 'src', original);
     };
-}
+};
 
 /**
  * Installs the image mock for a whole suite, restoring it afterwards, and returns a
@@ -63,7 +63,7 @@ export function mockImageLoad(opts: MockImageResolver): () => void {
  * Every editor suite needs this same beforeEach/afterEach pair; keeping it here stops each
  * one hand-rolling its own `let restoreImage` bookkeeping.
  */
-export function installImageMock(defaults: MockImageResolver): (opts: MockImageResolver) => void {
+export const installImageMock = (defaults: MockImageResolver): ((opts: MockImageResolver) => void) => {
     let restore: () => void = () => {};
 
     beforeEach(() => {
@@ -78,7 +78,7 @@ export function installImageMock(defaults: MockImageResolver): (opts: MockImageR
         restore();
         restore = mockImageLoad(opts);
     };
-}
+};
 
 /**
  * Lets the image `onload` microtask and the hook's deferred timers settle.
@@ -86,11 +86,11 @@ export function installImageMock(defaults: MockImageResolver): (opts: MockImageR
  * Several turns: the remote-source path chains fetch -> blob -> FileReader before it ever
  * assigns img.src, so a single microtask flush is not enough. Requires fake timers.
  */
-export async function settle(): Promise<void> {
+export const settle = async (): Promise<void> => {
     for (let i = 0; i < 5; i++) {
         await act(async () => {
             await Promise.resolve();
             vi.advanceTimersByTime(200);
         });
     }
-}
+};

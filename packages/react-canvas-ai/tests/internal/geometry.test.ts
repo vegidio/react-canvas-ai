@@ -4,14 +4,14 @@ import { calculateBaseScale, clampPan, toImageCoordinates } from '../../src/inte
 const rect = (width: number, height: number): DOMRect =>
     ({ left: 0, top: 0, width, height, right: width, bottom: height, x: 0, y: 0 }) as DOMRect;
 
-function makeContainer(width: number, height: number, padding = '0px') {
+const makeContainer = (width: number, height: number, padding = '0px') => {
     const el = document.createElement('div');
     el.style.padding = padding;
     document.body.append(el);
     Object.defineProperty(el, 'clientWidth', { value: width, configurable: true });
     Object.defineProperty(el, 'clientHeight', { value: height, configurable: true });
     return el;
-}
+};
 
 describe('calculateBaseScale', () => {
     it('leaves content smaller than the container at natural size', () => {

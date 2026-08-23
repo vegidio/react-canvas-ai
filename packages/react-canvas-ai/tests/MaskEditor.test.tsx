@@ -8,12 +8,12 @@ import { installImageMock, SRC } from './helpers/image';
 
 installImageMock({ width: 400, height: 200 });
 
-function renderEditor(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
+const renderEditor = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
     const onDrawingChange = vi.fn();
     const utils = render(<MaskEditor src={SRC} onDrawingChange={onDrawingChange} {...props} />);
     const root = utils.container.querySelector('.react-mask-editor-outer') as HTMLElement;
     return { ...utils, root, onDrawingChange };
-}
+};
 
 describe('structure', () => {
     it('renders the layer skeleton with all three canvases', () => {
@@ -170,7 +170,7 @@ describe('keyboardScope', () => {
 
     const innerOf = (el: HTMLElement) => el.querySelector('.react-mask-editor-inner') as HTMLElement;
 
-    function renderPair(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
+    const renderPair = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
         const first = vi.fn();
         const second = vi.fn();
         const utils = render(
@@ -181,7 +181,7 @@ describe('keyboardScope', () => {
         );
         const editors = utils.container.querySelectorAll('.react-mask-editor-outer');
         return { first, second, editors: [...editors] as HTMLElement[] };
-    }
+    };
 
     it('lets both editors answer one shortcut by default', () => {
         const { first, second } = renderPair();

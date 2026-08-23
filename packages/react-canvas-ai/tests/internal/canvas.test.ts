@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { computeTargetSize, drawCursorCircle, paintMaskDot, recolorMask } from '../../src/internal/canvas';
 
-function makeContext(pixels: number[] = []) {
+const makeContext = (pixels: number[] = []) => {
     const imageData = { data: Uint8ClampedArray.from(pixels), width: 1, height: 1 } as ImageData;
     return {
         imageData,
@@ -19,7 +19,7 @@ function makeContext(pixels: number[] = []) {
             globalAlpha: 1,
         } as unknown as CanvasRenderingContext2D,
     };
-}
+};
 
 const asImage = (width: number, height: number, natural = { width, height }) =>
     ({ width, height, naturalWidth: natural.width, naturalHeight: natural.height }) as HTMLImageElement;

@@ -163,16 +163,16 @@ const MyComponent = () => {
 
 The `MaskEditor` component exposes useful methods via `ref`:
 
-| Name          | Type                             | Description                                       |                          |
-| ------------- | -------------------------------- | ------------------------------------------------- | ------------------------ |
-| `maskCanvas`  | \`HTMLCanvasElement              | null\`                                            | The mask canvas element. |
-| `undo()`      | `() => void`                     | Undo the last mask change.                        |                          |
-| `redo()`      | `() => void`                     | Redo the last undone mask change.                 |                          |
-| `clear()`     | `() => void`                     | Clear the mask.                                   |                          |
-| `resetZoom()` | `() => void`                     | Reset zoom to initial scale and center the image. |                          |
-| `setPan()`    | `(x: number, y: number) => void` | Set the pan position manually.                    |                          |
-| `zoomIn()`    | `() => void`                     | Zoom in by one step (0.2 scale increment).        |                          |
-| `zoomOut()`   | `() => void`                     | Zoom out by one step (0.2 scale decrement).       |                          |
+| Name           | Type                             | Description                                                    |
+| -------------- | -------------------------------- | -------------------------------------------------------------- |
+| `maskCanvas?`  | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. |
+| `undo()`       | `() => void`                     | Undo the last mask change.                                     |
+| `redo()`       | `() => void`                     | Redo the last undone mask change.                              |
+| `clear()`      | `() => void`                     | Clear the mask.                                                |
+| `resetZoom()`  | `() => void`                     | Reset zoom to initial scale and center the image.              |
+| `setPan()`     | `(x: number, y: number) => void` | Set the pan position manually.                                 |
+| `zoomIn()`     | `() => void`                     | Zoom in by one step (0.2 scale increment).                     |
+| `zoomOut()`    | `() => void`                     | Zoom out by one step (0.2 scale decrement).                    |
 
 ---
 

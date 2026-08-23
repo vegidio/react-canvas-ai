@@ -2,7 +2,7 @@ import { MaskEditorLayers, MaskEditorProvider, useMaskEditorContext } from 'reac
 import cat from './assets/images/cat.jpg';
 
 // Canvas and controls as separate components using the context.
-function MaskEditorCanvas() {
+const MaskEditorCanvas = () => {
     // MaskEditorLayers rather than three hand-rolled canvases: the stacking, z-order,
     // pointer-events and blend-mode contract lives in the package, so this example cannot
     // drift out of sync with it.
@@ -12,9 +12,9 @@ function MaskEditorCanvas() {
             <MaskEditorLayers />
         </div>
     );
-}
+};
 
-function MaskEditorControls() {
+const MaskEditorControls = () => {
     const { undo, redo, clear, historyIndex } = useMaskEditorContext();
     return (
         <div style={{ marginTop: 16 }}>
@@ -30,9 +30,9 @@ function MaskEditorControls() {
             <span style={{ marginLeft: 8, color: '#888' }}>History: {historyIndex + 1}</span>
         </div>
     );
-}
+};
 
-export default function MaskEditorProviderExample() {
+const MaskEditorProviderExample = () => {
     return (
         <MaskEditorProvider src={cat} onDrawingChange={() => {}}>
             <h2>MaskEditorProvider Example</h2>
@@ -40,4 +40,6 @@ export default function MaskEditorProviderExample() {
             <MaskEditorControls />
         </MaskEditorProvider>
     );
-}
+};
+
+export default MaskEditorProviderExample;

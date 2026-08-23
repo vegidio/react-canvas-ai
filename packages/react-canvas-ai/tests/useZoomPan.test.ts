@@ -11,7 +11,7 @@ let container: HTMLDivElement;
  * jsdom reports a zero-sized box and an empty padding string. `calculateBaseScale` runs
  * `parseFloat` over that padding, so without a real value baseScale comes out NaN.
  */
-function mountContainer(width = 200, height = 200) {
+const mountContainer = (width = 200, height = 200) => {
     const el = document.createElement('div');
     el.style.padding = '0px';
     document.body.append(el);
@@ -24,21 +24,21 @@ function mountContainer(width = 200, height = 200) {
     el.getBoundingClientRect = () =>
         ({ left: 0, top: 0, width, height, right: width, bottom: height, x: 0, y: 0 }) as DOMRect;
     return el;
-}
+};
 
-function setup(options: ZoomPanOptions = {}, contentSize = CONTENT) {
+const setup = (options: ZoomPanOptions = {}, contentSize = CONTENT) => {
     const ref = { current: container } as React.RefObject<HTMLDivElement | null>;
     return renderHook(() => useZoomPan(ref, contentSize, options));
-}
+};
 
 /** Let a coalesced rAF pan commit land. */
 const flushFrame = () => act(async () => void (await new Promise(requestAnimationFrame)));
 
 /** Raise `transform.scale` above 1, which is what actually gates panning. */
-function zoomInto(result: { current: readonly [unknown, { zoomIn: () => void }] }) {
+const zoomInto = (result: { current: readonly [unknown, { zoomIn: () => void }] }) => {
     act(() => result.current[1].zoomIn());
     act(() => result.current[1].zoomIn());
-}
+};
 
 beforeEach(() => {
     container = mountContainer();
@@ -550,10 +550,10 @@ describe('container resize', () => {
 
 describe('keyboardScope', () => {
     /** A focusable stand-in for the container the editor renders. */
-    function focusableContainer() {
+    const focusableContainer = () => {
         container.tabIndex = 0;
         return container;
-    }
+    };
 
     it('responds to Space from anywhere on the page by default', () => {
         const { result } = setup();

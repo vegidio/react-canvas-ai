@@ -4,7 +4,7 @@
     "type": "module",
     "description": "Monorepo root for react-canvas-ai, a general-purpose mask editor for React image manipulation apps.",
     "license": "Apache-2.0",
-    "author": "Vinicius Egidio <vegidio@gmail.com> (https://vinicius.io)",
+    "author": "Vinicius Egidio <me@vinicius.io> (https://vinicius.io)",
     "repository": {
         "type": "git",
         "url": "git+https://github.com/vegidio/react-canvas-ai.git"

@@ -1,19 +1,19 @@
-import * as React from 'react';
+import { useCallback, useMemo, useRef, useState } from 'react';
 
-export interface HistoryState {
+export type HistoryState = {
     imageData: ImageData;
-}
+};
 
-export interface UseHistoryReturn {
+export type UseHistoryReturn = {
     history: HistoryState[];
     historyIndex: number;
     saveToHistory: () => void;
     undo: () => void;
     redo: () => void;
     clear: () => void;
-}
+};
 
-interface UseHistoryOptions {
+type UseHistoryOptions = {
     onUndoRequest?: () => void;
     onRedoRequest?: () => void;
     /**
@@ -27,13 +27,13 @@ interface UseHistoryOptions {
      * At least one entry is always retained, however large the canvas.
      */
     maxHistoryBytes?: number;
-}
+};
 
 /** The entries and the cursor into them move together, so they are one value. */
-interface HistoryStack {
+type HistoryStack = {
     entries: HistoryState[];
     index: number;
-}
+};
 
 const EMPTY: HistoryStack = { entries: [], index: -1 };
 
@@ -43,7 +43,7 @@ const DEFAULT_MAX_HISTORY_BYTES = 64 * 1024 * 1024;
 /**
  * Drops the oldest entries until the stack fits the byte budget, always keeping the newest.
  */
-function capToBudget(entries: HistoryState[], maxBytes: number): HistoryState[] {
+const capToBudget = (entries: HistoryState[], maxBytes: number): HistoryState[] => {
     let total = 0;
     for (let i = entries.length - 1; i >= 0; i--) {
         const entry = entries[i];
@@ -55,29 +55,29 @@ function capToBudget(entries: HistoryState[], maxBytes: number): HistoryState[] 
         if (total > maxBytes && i !== entries.length - 1) return entries.slice(i + 1);
     }
     return entries;
-}
+};
 
-export function useHistory(
-    context: CanvasRenderingContext2D | null,
+export const useHistory = (
+    context: CanvasRenderingContext2D | undefined,
     size: { x: number; y: number },
     options: UseHistoryOptions = {},
-): UseHistoryReturn {
+): UseHistoryReturn => {
     const { onUndoRequest, onRedoRequest, maxHistoryBytes = DEFAULT_MAX_HISTORY_BYTES } = options;
 
-    const [stack, setStack] = React.useState<HistoryStack>(EMPTY);
+    const [stack, setStack] = useState<HistoryStack>(EMPTY);
 
     // Mirrored eagerly so two saves in the same tick see each other. Holding the entries and
     // the index in separate state, and reading the index from the closure inside a
     // `setHistory` updater, used to let the two drift apart and silently corrupt undo —
     // reachable from a fast double stroke, or a stroke landing alongside an initial mask.
-    const stackRef = React.useRef(stack);
+    const stackRef = useRef(stack);
 
-    const commit = React.useCallback((next: HistoryStack) => {
+    const commit = useCallback((next: HistoryStack) => {
         stackRef.current = next;
         setStack(next);
     }, []);
 
-    const saveToHistory = React.useCallback(() => {
+    const saveToHistory = useCallback(() => {
         if (!context || size.x === 0 || size.y === 0) return;
 
         let imageData: ImageData;
@@ -100,7 +100,7 @@ export function useHistory(
     }, [context, size, maxHistoryBytes, commit]);
 
     /** Internal: `undo`/`redo` are the surface. Exposing this leaked a bounds contract. */
-    const restoreFromHistory = React.useCallback(
+    const restoreFromHistory = useCallback(
         (index: number) => {
             if (!context || size.x === 0 || size.y === 0) return;
 
@@ -123,12 +123,12 @@ export function useHistory(
         [context, size, commit],
     );
 
-    const undo = React.useCallback(() => {
+    const undo = useCallback(() => {
         restoreFromHistory(stackRef.current.index - 1);
         onUndoRequest?.();
     }, [restoreFromHistory, onUndoRequest]);
 
-    const redo = React.useCallback(() => {
+    const redo = useCallback(() => {
         const next = stackRef.current.index + 1;
         if (!stackRef.current.entries[next]) return;
 
@@ -136,14 +136,14 @@ export function useHistory(
         onRedoRequest?.();
     }, [restoreFromHistory, onRedoRequest]);
 
-    const clear = React.useCallback(() => {
+    const clear = useCallback(() => {
         if (!context || size.x === 0 || size.y === 0) return;
 
         context.clearRect(0, 0, size.x, size.y);
         commit({ entries: [], index: -1 });
     }, [context, size, commit]);
 
-    return React.useMemo(
+    return useMemo(
         () => ({
             history: stack.entries,
             historyIndex: stack.index,
@@ -154,4 +154,4 @@ export function useHistory(
         }),
         [stack, saveToHistory, undo, redo, clear],
     );
-}
+};

@@ -1,4 +1,5 @@
-import React from 'react';
+import type { RefObject } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 
 /**
  * Acquires the 2D context for a canvas once it has mounted, as state so consumers re-render
@@ -8,16 +9,16 @@ import React from 'react';
  * out of GPU-backed rendering onto the software rasterizer, which is a real cost on a layer
  * that is repainted per pointer move.
  */
-export function useCanvas2dContext(
-    ref: React.RefObject<HTMLCanvasElement | null>,
+export const useCanvas2dContext = (
+    ref: RefObject<HTMLCanvasElement | null>,
     options?: CanvasRenderingContext2DSettings,
-): CanvasRenderingContext2D | null {
-    const [context, setContext] = React.useState<CanvasRenderingContext2D | null>(null);
-    const optionsRef = React.useRef(options);
+): CanvasRenderingContext2D | undefined => {
+    const [context, setContext] = useState<CanvasRenderingContext2D | undefined>(undefined);
+    const optionsRef = useRef(options);
 
-    React.useLayoutEffect(() => {
-        if (ref.current && !context) setContext(ref.current.getContext('2d', optionsRef.current));
+    useLayoutEffect(() => {
+        if (ref.current && !context) setContext(ref.current.getContext('2d', optionsRef.current) ?? undefined);
     }, [ref, context]);
 
     return context;
-}
+};

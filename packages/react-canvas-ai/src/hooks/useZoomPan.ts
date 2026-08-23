@@ -1,4 +1,5 @@
-import React from 'react';
+import type { RefObject } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import { acquireBodyPanCursor } from '../internal/bodyPanCursor';
@@ -13,7 +14,7 @@ const ZOOM_STEP = 0.2;
 /** Content size has to move by more than this before the view re-fits itself. */
 const REFIT_THRESHOLD = 5;
 
-export interface ZoomPanOptions {
+export type ZoomPanOptions = {
     initialScale?: number;
     minScale?: number;
     maxScale?: number;
@@ -22,9 +23,9 @@ export interface ZoomPanOptions {
     keyboardScope?: KeyboardScope;
     onScaleChange?: (scale: number) => void;
     onPanChange?: (x: number, y: number) => void;
-}
+};
 
-export interface ZoomPanState {
+export type ZoomPanState = {
     scale: number;
     transform: Transform;
     baseScale: number;
@@ -32,9 +33,9 @@ export interface ZoomPanState {
     isPanning: boolean;
     isSpaceKeyDown: boolean;
     isZoomKeyDown: boolean;
-}
+};
 
-export interface ZoomPanActions {
+export type ZoomPanActions = {
     /**
      * Sets the zoom, clamped to `[minScale, maxScale]`. Moves the transform with it — the raw
      * state dispatch this replaced left them disagreeing.
@@ -45,15 +46,15 @@ export interface ZoomPanActions {
     getImageCoordinates: (clientX: number, clientY: number) => Point;
     zoomIn: () => void;
     zoomOut: () => void;
-}
+};
 
 const CENTERED: Transform = { scale: 1, translateX: 0, translateY: 0 };
 
-export function useZoomPan(
-    containerRef: React.RefObject<HTMLDivElement | null>,
+export const useZoomPan = (
+    containerRef: RefObject<HTMLDivElement | null>,
     contentSize: Point,
     options: ZoomPanOptions = {},
-): [ZoomPanState, ZoomPanActions] {
+): [ZoomPanState, ZoomPanActions] => {
     const {
         initialScale = MaskEditorDefaults.scale,
         minScale = MaskEditorDefaults.minScale,
@@ -70,17 +71,17 @@ export function useZoomPan(
     const notifyScaleChange = useEventCallback<[number]>(onScaleChange);
     const notifyPanChange = useEventCallback<[number, number]>(onPanChange);
 
-    const [scale, setScaleState] = React.useState(initialScale);
-    const [transform, setTransform] = React.useState<Transform>({
+    const [scale, setScaleState] = useState(initialScale);
+    const [transform, setTransform] = useState<Transform>({
         scale: initialScale,
         translateX: 0,
         translateY: 0,
     });
-    const [baseScale, setBaseScale] = React.useState(1);
+    const [baseScale, setBaseScale] = useState(1);
 
-    const [isPanning, setIsPanning] = React.useState(false);
-    const [isSpaceKeyDown, setIsSpaceKeyDown] = React.useState(false);
-    const [isZoomKeyDown, setIsZoomKeyDown] = React.useState(false);
+    const [isPanning, setIsPanning] = useState(false);
+    const [isSpaceKeyDown, setIsSpaceKeyDown] = useState(false);
+    const [isZoomKeyDown, setIsZoomKeyDown] = useState(false);
 
     // Mirrors of the state above. Event handlers and observers read these instead of closing
     // over the rendered values, which is what lets their effects attach exactly once.
@@ -89,33 +90,33 @@ export function useZoomPan(
     const scaleRef = useLatest(scale);
     const transformRef = useLatest(transform);
     const baseScaleRef = useLatest(baseScale);
-    const isPanningRef = React.useRef(false);
-    const isSpaceKeyDownRef = React.useRef(false);
-    const isZoomKeyDownRef = React.useRef(false);
+    const isPanningRef = useRef(false);
+    const isSpaceKeyDownRef = useRef(false);
+    const isZoomKeyDownRef = useRef(false);
 
     // Never rendered, so this is deliberately not state: as state it put every pan listener
     // back on the element on every single mousemove.
-    const lastMousePositionRef = React.useRef<Point>({ x: 0, y: 0 });
-    const releasePanCursorRef = React.useRef<(() => void) | null>(null);
+    const lastMousePositionRef = useRef<Point>({ x: 0, y: 0 });
+    const releasePanCursorRef = useRef<(() => void) | undefined>(undefined);
     // Latest un-committed pointer position during a pan, and the frame scheduled to apply it.
-    const pendingPanRef = React.useRef<Point | null>(null);
-    const frameRef = React.useRef<number | null>(null);
-    // `null` until the first successful fit, which is what makes that first fit unconditional.
-    const lastContentSizeRef = React.useRef<Point | null>(null);
+    const pendingPanRef = useRef<Point | undefined>(undefined);
+    const frameRef = useRef<number | undefined>(undefined);
+    // `undefined` until the first successful fit, which is what makes that first fit unconditional.
+    const lastContentSizeRef = useRef<Point | undefined>(undefined);
 
     // Single write paths. Updating the ref eagerly means two actions in the same tick see
     // each other's result, and keeps side effects out of the state updaters entirely.
-    const commitScale = React.useCallback((next: number) => {
+    const commitScale = useCallback((next: number) => {
         scaleRef.current = next;
         setScaleState(next);
     }, []);
 
-    const commitTransform = React.useCallback((next: Transform) => {
+    const commitTransform = useCallback((next: Transform) => {
         transformRef.current = next;
         setTransform(next);
     }, []);
 
-    const setPanning = React.useCallback((next: boolean) => {
+    const setPanning = useCallback((next: boolean) => {
         isPanningRef.current = next;
         setIsPanning(next);
     }, []);
@@ -128,7 +129,7 @@ export function useZoomPan(
      * should read the rect once and pass it here rather than going through
      * {@link getImageCoordinates}.
      */
-    const toImageCoordinatesWithRect = React.useCallback(
+    const toImageCoordinatesWithRect = useCallback(
         (clientX: number, clientY: number, rect: DOMRect): Point =>
             toImageCoordinates(clientX, clientY, rect, contentSize, transformRef.current, baseScaleRef.current),
         [contentSize],
@@ -137,21 +138,21 @@ export function useZoomPan(
     // The container rect is read on every pointer move, but only changes on scroll, resize
     // or a layout shift. Cache it and invalidate on those, rather than forcing a layout read
     // per event.
-    const cachedRectRef = React.useRef<DOMRect | null>(null);
+    const cachedRectRef = useRef<DOMRect | undefined>(undefined);
 
-    const readRect = React.useCallback((): DOMRect | null => {
+    const readRect = useCallback((): DOMRect | undefined => {
         const container = containerRef.current;
-        if (!container) return null;
+        if (!container) return undefined;
 
         cachedRectRef.current ??= container.getBoundingClientRect();
         return cachedRectRef.current;
     }, [containerRef]);
 
-    const invalidateRect = React.useCallback(() => {
-        cachedRectRef.current = null;
+    const invalidateRect = useCallback(() => {
+        cachedRectRef.current = undefined;
     }, []);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const container = containerRef.current;
 
         // Capture phase: a scroll in any ancestor moves the container, and scroll events
@@ -171,7 +172,7 @@ export function useZoomPan(
         };
     }, [containerRef, invalidateRect]);
 
-    const getImageCoordinates = React.useCallback(
+    const getImageCoordinates = useCallback(
         (clientX: number, clientY: number): Point => {
             const rect = readRect();
             if (!rect) return { x: 0, y: 0 };
@@ -182,7 +183,7 @@ export function useZoomPan(
     );
 
     /** Re-fits the content to the container and recentres it. */
-    const recalculateBaseScaleAndCenter = React.useCallback(() => {
+    const recalculateBaseScaleAndCenter = useCallback(() => {
         const container = containerRef.current;
         if (!container || contentSize.x === 0 || contentSize.y === 0) return;
 
@@ -200,15 +201,15 @@ export function useZoomPan(
 
     const recalculateRef = useLatest(recalculateBaseScaleAndCenter);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const container = containerRef.current;
         if (!container) return;
 
         // Read through the ref: closing over `recalculate` directly meant that after the
         // first resize the observer kept re-fitting to the *original* content size.
         const observer = new ResizeObserver(() => {
-            cachedRectRef.current = null;
-            lastContentSizeRef.current = null;
+            cachedRectRef.current = undefined;
+            lastContentSizeRef.current = undefined;
             recalculateRef.current();
         });
 
@@ -216,7 +217,7 @@ export function useZoomPan(
         return () => observer.disconnect();
     }, [containerRef]);
 
-    React.useLayoutEffect(() => {
+    useLayoutEffect(() => {
         if (!containerRef.current || contentSize.x === 0 || contentSize.y === 0) return;
 
         const last = lastContentSizeRef.current;
@@ -229,7 +230,7 @@ export function useZoomPan(
     }, [containerRef, contentSize, recalculateBaseScaleAndCenter]);
 
     /** Zooms so the content under the cursor stays under the cursor. */
-    const zoomToPoint = React.useCallback(
+    const zoomToPoint = useCallback(
         (newScale: number, pointX: number, pointY: number, rect: DOMRect) => {
             const under = toImageCoordinatesWithRect(rect.left + pointX, rect.top + pointY, rect);
 
@@ -252,7 +253,7 @@ export function useZoomPan(
     const zoomToPointRef = useLatest(zoomToPoint);
     const keyboardScopeRef = useLatest(keyboardScope);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const container = containerRef.current;
         if (!enableWheelZoom || !container) return;
 
@@ -281,7 +282,7 @@ export function useZoomPan(
      * the transform into a `setTimeout` from inside the `setScale` updater used to let a
      * stale zoom overwrite an intervening `resetZoom`, and double-fired under StrictMode.
      */
-    const stepZoom = React.useCallback(
+    const stepZoom = useCallback(
         (delta: number) => {
             const current = scaleRef.current;
             const newScale = Math.max(minScale, Math.min(maxScale, current + delta));
@@ -294,7 +295,7 @@ export function useZoomPan(
         [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
     );
 
-    const setScale = React.useCallback(
+    const setScale = useCallback(
         (next: number) => {
             const clamped = Math.max(minScale, Math.min(maxScale, next));
             if (clamped === scaleRef.current) return;
@@ -306,17 +307,17 @@ export function useZoomPan(
         [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
     );
 
-    const zoomIn = React.useCallback(() => stepZoom(ZOOM_STEP), [stepZoom]);
-    const zoomOut = React.useCallback(() => stepZoom(-ZOOM_STEP), [stepZoom]);
+    const zoomIn = useCallback(() => stepZoom(ZOOM_STEP), [stepZoom]);
+    const zoomOut = useCallback(() => stepZoom(-ZOOM_STEP), [stepZoom]);
 
-    const resetZoom = React.useCallback(() => {
+    const resetZoom = useCallback(() => {
         commitScale(1);
         commitTransform({ ...CENTERED });
         notifyScaleChange(1);
         notifyPanChange(0, 0);
     }, [commitScale, commitTransform, notifyScaleChange, notifyPanChange]);
 
-    const setPan = React.useCallback(
+    const setPan = useCallback(
         (x: number, y: number) => {
             const previous = transformRef.current;
             const constrained = clampPan(x, y, contentSize, constrainPan && Boolean(containerRef.current));
@@ -329,15 +330,15 @@ export function useZoomPan(
         [containerRef, contentSize, constrainPan, commitTransform, notifyPanChange],
     );
 
-    const releasePanCursor = React.useCallback(() => {
+    const releasePanCursor = useCallback(() => {
         releasePanCursorRef.current?.();
-        releasePanCursorRef.current = null;
+        releasePanCursorRef.current = undefined;
     }, []);
 
     // Let go of the page cursor if we unmount mid-pan.
-    React.useEffect(() => releasePanCursor, [releasePanCursor]);
+    useEffect(() => releasePanCursor, [releasePanCursor]);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (isFormField(e.target)) return;
             if (!isKeyboardInScope(keyboardScopeRef.current, containerRef.current)) return;
@@ -394,7 +395,7 @@ export function useZoomPan(
 
     const canPan = transform.scale > 1;
 
-    React.useEffect(() => {
+    useEffect(() => {
         const container = containerRef.current;
         if (!container || !canPan) return;
 
@@ -416,11 +417,11 @@ export function useZoomPan(
         // Only the pan commit is coalesced. The mask-painting path deliberately still paints
         // per event: one dab per frame would leave visible gaps in a fast stroke.
         const flushPan = () => {
-            frameRef.current = null;
+            frameRef.current = undefined;
 
             const pending = pendingPanRef.current;
             if (!pending || !isPanningRef.current) return;
-            pendingPanRef.current = null;
+            pendingPanRef.current = undefined;
 
             const last = lastMousePositionRef.current;
             const current = transformRef.current;
@@ -453,9 +454,9 @@ export function useZoomPan(
         container.addEventListener('mouseleave', stopPanning);
 
         return () => {
-            if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
-            frameRef.current = null;
-            pendingPanRef.current = null;
+            if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
+            frameRef.current = undefined;
+            pendingPanRef.current = undefined;
 
             container.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mousemove', handleMouseMove);
@@ -465,16 +466,16 @@ export function useZoomPan(
     }, [containerRef, canPan, setPan, setPanning, releasePanCursor]);
 
     // Nothing to pan once we are back to fit-to-container.
-    React.useEffect(() => {
+    useEffect(() => {
         if (!canPan) setPan(0, 0);
     }, [canPan, setPan]);
 
-    const state = React.useMemo<ZoomPanState>(
+    const state = useMemo<ZoomPanState>(
         () => ({ scale, transform, baseScale, effectiveScale, isPanning, isSpaceKeyDown, isZoomKeyDown }),
         [scale, transform, baseScale, effectiveScale, isPanning, isSpaceKeyDown, isZoomKeyDown],
     );
 
-    const actions = React.useMemo<ZoomPanActions>(
+    const actions = useMemo<ZoomPanActions>(
         () => ({ setScale, resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut }),
         [setScale, resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut],
     );
@@ -482,4 +483,4 @@ export function useZoomPan(
     // No memo around the tuple: it is destructured at the call site, so its identity is
     // never observed.
     return [state, actions];
-}
+};

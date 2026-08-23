@@ -1,4 +1,5 @@
-import React from 'react';
+import type { RefObject } from 'react';
+import { useCallback, useEffect } from 'react';
 import type { Point } from './geometry';
 import { drawCursorCircle } from './canvas';
 import { useLatest } from './useLatest';
@@ -9,23 +10,23 @@ const CURSOR_OPACITY_BOOST = 0.1;
 /** Repaints the cursor layer with the brush outline at a point, in image coordinates. */
 export type PaintCursor = (x: number, y: number, radius: number) => void;
 
-export interface CursorPainterOptions {
+export type CursorPainterOptions = {
     size: Point;
     maskColor: string;
     maskOpacity: number;
-}
+};
 
 /**
  * Builds the brush-outline painter. Stable across renders — the appearance inputs are read
  * through refs so the pointer listeners below never need re-attaching when a colour changes.
  */
-export function useCursorPainter(
-    cursorContext: CanvasRenderingContext2D | null,
+export const useCursorPainter = (
+    cursorContext: CanvasRenderingContext2D | undefined,
     options: CursorPainterOptions,
-): PaintCursor {
+): PaintCursor => {
     const optionsRef = useLatest(options);
 
-    return React.useCallback(
+    return useCallback(
         (x, y, radius) => {
             if (!cursorContext) return;
 
@@ -41,26 +42,26 @@ export function useCursorPainter(
         },
         [cursorContext],
     );
-}
+};
 
-export interface BrushCursorOptions {
+export type BrushCursorOptions = {
     paintCursor: PaintCursor;
     getImageCoordinates: (clientX: number, clientY: number) => Point;
     /** Shared with {@link useBrushSizeWheel}, which writes it eagerly. */
-    cursorSizeRef: React.RefObject<number>;
+    cursorSizeRef: RefObject<number>;
     isPanning: boolean;
     isSpaceKeyDown: boolean;
     paintDab: (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
-}
+};
 
 /** Tracks the pointer over the cursor layer, painting the mask while a button is held. */
-export function useBrushCursor(
-    cursorCanvasRef: React.RefObject<HTMLCanvasElement | null>,
+export const useBrushCursor = (
+    cursorCanvasRef: RefObject<HTMLCanvasElement | null>,
     options: BrushCursorOptions,
-): void {
+): void => {
     const optionsRef = useLatest(options);
 
-    React.useEffect(() => {
+    useEffect(() => {
         const cursorCanvas = cursorCanvasRef.current;
         if (!cursorCanvas) return;
 
@@ -78,27 +79,27 @@ export function useBrushCursor(
         cursorCanvas.addEventListener('mousemove', handleMouseMove);
         return () => cursorCanvas.removeEventListener('mousemove', handleMouseMove);
     }, [cursorCanvasRef]);
-}
+};
 
-export interface BrushSizeWheelOptions {
+export type BrushSizeWheelOptions = {
     /** Wheel resizing is only wired up when the consumer asked to hear about it. */
     enabled: boolean;
     paintCursor: PaintCursor;
     getImageCoordinates: (clientX: number, clientY: number) => Point;
-    cursorSizeRef: React.RefObject<number>;
+    cursorSizeRef: RefObject<number>;
     setCursorSize: (size: number) => void;
     onCursorSizeChange: (size: number) => void;
-}
+};
 
 /** Resizes the brush on a plain wheel. Ctrl/meta is the zoom gesture and is left alone. */
-export function useBrushSizeWheel(
-    cursorCanvasRef: React.RefObject<HTMLCanvasElement | null>,
+export const useBrushSizeWheel = (
+    cursorCanvasRef: RefObject<HTMLCanvasElement | null>,
     options: BrushSizeWheelOptions,
-): void {
+): void => {
     const optionsRef = useLatest(options);
     const { enabled } = options;
 
-    React.useEffect(() => {
+    useEffect(() => {
         const cursorCanvas = cursorCanvasRef.current;
         if (!enabled || !cursorCanvas) return;
 
@@ -125,4 +126,4 @@ export function useBrushSizeWheel(
         cursorCanvas.addEventListener('wheel', handleWheel, { passive: false });
         return () => cursorCanvas.removeEventListener('wheel', handleWheel);
     }, [cursorCanvasRef, enabled]);
-}
+};

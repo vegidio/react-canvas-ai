@@ -1,15 +1,15 @@
-import * as React from 'react';
+import { useRef, useState } from 'react';
 import { MaskEditor, type MaskEditorCanvasRef, toMask } from 'react-canvas-ai';
 import MaskEditorProviderExample from './MaskEditorProviderExample';
 
-function App() {
-    const canvas = React.useRef<MaskEditorCanvasRef>(null);
-    const [mask, setMask] = React.useState('');
-    const [size, setSize] = React.useState(20);
-    const [color, setColor] = React.useState('#c3c3c3');
-    const [scale, setScale] = React.useState(1);
-    const [panPosition, setPanPosition] = React.useState({ x: 0, y: 0 });
-    const [drawing, setDrawing] = React.useState(false);
+const App = () => {
+    const canvas = useRef<MaskEditorCanvasRef>(null);
+    const [mask, setMask] = useState('');
+    const [size, setSize] = useState(20);
+    const [color, setColor] = useState('#c3c3c3');
+    const [scale, setScale] = useState(1);
+    const [panPosition, setPanPosition] = useState({ x: 0, y: 0 });
+    const [drawing, setDrawing] = useState(false);
     const imgSrc =
         'https://static.vecteezy.com/system/resources/previews/049/855/471/large_2x/nature-background-high-resolution-wallpaper-for-a-serene-and-stunning-view-free-photo.jpg';
 
@@ -213,6 +213,6 @@ function App() {
             </div>
         </>
     );
-}
+};
 
 export default App;
