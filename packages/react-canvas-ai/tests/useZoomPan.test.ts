@@ -109,6 +109,50 @@ describe('zoom actions', () => {
     });
 });
 
+describe('setScale', () => {
+    it('moves the transform with the scale', () => {
+        // Regression guard: setScale used to be the raw state dispatch, so it changed
+        // `scale` while leaving `transform.scale` at its old value — effectiveScale and the
+        // rendered CSS transform then disagreed.
+        const { result } = setup();
+        act(() => result.current[1].setScale(2));
+
+        expect(result.current[0].scale).toBe(2);
+        expect(result.current[0].transform.scale).toBe(2);
+    });
+
+    it.each([
+        ['above maxScale', 99, 4],
+        ['below minScale', 0.1, 0.8],
+    ])('clamps a value %s', (_label, requested, expected) => {
+        const { result } = setup();
+        act(() => result.current[1].setScale(requested));
+
+        expect(result.current[0].scale).toBe(expected);
+    });
+
+    it('notifies the consumer with the clamped value', () => {
+        const onScaleChange = vi.fn();
+        const { result } = setup({ onScaleChange });
+        onScaleChange.mockClear();
+
+        act(() => result.current[1].setScale(99));
+
+        expect(onScaleChange).toHaveBeenCalledWith(4);
+    });
+
+    it('does nothing when the clamped value is unchanged', () => {
+        const onScaleChange = vi.fn();
+        const { result } = setup({ onScaleChange });
+        act(() => result.current[1].setScale(4));
+        onScaleChange.mockClear();
+
+        act(() => result.current[1].setScale(99));
+
+        expect(onScaleChange).not.toHaveBeenCalled();
+    });
+});
+
 describe('panning', () => {
     it('constrains pan to 75% of the content size', () => {
         const { result } = setup({ constrainPan: true });

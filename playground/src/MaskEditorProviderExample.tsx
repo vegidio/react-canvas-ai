@@ -1,43 +1,15 @@
-import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
+import { MaskEditorLayers, MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
 import cat from './assets/images/cat.jpg';
 
-// Canvas and controls as separate components using the context
+// Canvas and controls as separate components using the context.
 function MaskEditorCanvas() {
-    const { canvasRef, maskCanvasRef, cursorCanvasRef, size, handleMouseDown, handleMouseUp } = useMaskEditorContext();
+    // MaskEditorLayers rather than three hand-rolled canvases: the stacking, z-order,
+    // pointer-events and blend-mode contract lives in the package, so this example cannot
+    // drift out of sync with it.
+    const { size } = useMaskEditorContext();
     return (
         <div style={{ position: 'relative', width: size.x, height: size.y }}>
-            <canvas
-                ref={canvasRef}
-                width={size.x}
-                height={size.y}
-                style={{ position: 'absolute', left: 0, top: 0, zIndex: 1 }}
-            />
-            <canvas
-                ref={maskCanvasRef}
-                width={size.x}
-                height={size.y}
-                style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    zIndex: 2,
-                    pointerEvents: 'none',
-                }}
-            />
-            <canvas
-                ref={cursorCanvasRef}
-                width={size.x}
-                height={size.y}
-                style={{
-                    position: 'absolute',
-                    left: 0,
-                    top: 0,
-                    zIndex: 3,
-                    pointerEvents: 'auto',
-                }}
-                onMouseDown={handleMouseDown}
-                onMouseUp={handleMouseUp}
-            />
+            <MaskEditorLayers />
         </div>
     );
 }

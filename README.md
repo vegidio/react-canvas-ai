@@ -199,7 +199,7 @@ const CustomMaskEditor = () => {
     effectiveScale,
     size,
     undo,
-    containerRef,
+    containerProps,
     resetZoom,
     isPanning,
     setPan,
@@ -255,7 +255,7 @@ const CustomMaskEditor = () => {
       </div>
       <div
         className="react-mask-editor-inner"
-        ref={containerRef}
+        {...containerProps}
         style={{
           width: '100%',
           height: '100%',
@@ -328,24 +328,20 @@ const CustomMaskEditor = () => {
 Ideal if you want to split canvas and controls across components:
 
 ```tsx
-import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
+import {
+  MaskEditorLayers,
+  MaskEditorProvider,
+  useMaskEditorContext,
+} from 'react-canvas-ai';
 
 const MaskEditorCanvas = () => {
-  const {
-    canvasRef,
-    maskCanvasRef,
-    cursorCanvasRef,
-    containerRef,
-    size,
-    transform,
-    isPanning,
-    handleMouseDown,
-    handleMouseUp,
-  } = useMaskEditorContext();
+  const { containerProps, transform, isPanning } = useMaskEditorContext();
 
   return (
+    // Spread containerProps: it carries the ref, focus handling and the Space
+    // interception that keyboard shortcuts and panning depend on.
     <div
-      ref={containerRef}
+      {...containerProps}
       style={{ width: '100%', height: '500px', position: 'relative' }}
     >
       <div
@@ -357,15 +353,10 @@ const MaskEditorCanvas = () => {
           transition: isPanning ? 'none' : 'transform 0.15s ease-out',
         }}
       >
-        <canvas ref={canvasRef} width={size.x} height={size.y} />
-        <canvas ref={maskCanvasRef} width={size.x} height={size.y} />
-        <canvas
-          ref={cursorCanvasRef}
-          width={size.x}
-          height={size.y}
-          onMouseDown={handleMouseDown}
-          onMouseUp={handleMouseUp}
-        />
+        {/* Renders the three canvases with the right stacking, z-order,
+            pointer-events and blend mode. Use maskEditorLayerStyles instead if
+            you need to lay them out yourself. */}
+        <MaskEditorLayers />
       </div>
     </div>
   );
@@ -524,6 +515,48 @@ Or target the stable class names, which are kept purely as styling hooks:
 
 Because the built-in rules are inline, a plain class selector will not beat them — use
 the `style` prop (it is merged last and wins) or `!important` in your own stylesheet.
+
+---
+
+## 🔀 Migrating from `26.8.x`
+
+CalVer carries no semver signal, so breaking changes are called out here rather than in the
+version number. Pin an exact version if you need to upgrade deliberately.
+
+1. **`history` is now `historyLength`.** The hook used to hand back the raw `ImageData[]`,
+   which kept every retained undo state alive for as long as you held the hook's return
+   value. If you only rendered a count, swap the property:
+   ```diff
+   - <span>States: {history.length}</span>
+   + <span>States: {historyLength}</span>
+   ```
+2. **`maxHistorySize` is now `maxHistoryBytes`.** Entries are full uncompressed RGBA
+   buffers, so a count-based cap scaled with canvas area — 50 states of a 1602×900 canvas
+   is roughly 288 MB. The budget is now expressed in bytes and defaults to 64 MB, so a
+   large canvas keeps fewer states and a small one keeps more. At least one state is always
+   retained.
+3. **`setScale` clamps and moves the view.** It used to be the raw state setter, so it
+   changed `scale` without touching `transform` — leaving `effectiveScale` and the rendered
+   CSS transform disagreeing. It now takes a plain `number`, clamps to
+   `[minScale, maxScale]`, and moves the transform with it. Updater functions are no longer
+   accepted:
+   ```diff
+   - setScale((s) => s + 0.2);
+   + zoomIn(); // or setScale(scale + 0.2)
+   ```
+4. **Headless consumers should spread `containerProps`.** `useMaskEditor` now returns a
+   `containerProps` bundle (ref, `role`, `tabIndex`, key handling, focus-on-mousedown) in
+   place of the bare `containerRef`. This fixes `keyboardScope: 'container'` for
+   `MaskEditorProvider` consumers, for whom the focus half of it previously did nothing:
+   ```diff
+   - <div ref={containerRef}>
+   + <div {...containerProps}>
+   ```
+5. **`MaskEditorLayers` replaces hand-rolled canvas stacks.** The stacking, z-order,
+   pointer-events and blend-mode contract is exported now, so a headless layout no longer
+   has to re-derive it (and silently lose mask opacity or blend mode). Use
+   `maskEditorLayerStyles(...)` if you need to place the canvases yourself.
+6. **`restoreFromHistory` is gone** from `useHistory`'s return. Use `undo`/`redo`.
 
 ---
 

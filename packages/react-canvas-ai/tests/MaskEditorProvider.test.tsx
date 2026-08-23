@@ -1,10 +1,8 @@
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { MaskEditorContextValue } from '../src/components/MaskEditorProvider';
 import { MaskEditorProvider, useMaskEditorContext } from '../src/components/MaskEditorProvider';
-import { installImageMock } from './helpers/image';
-
-const SRC = 'data:image/png;base64,iVBORw0KGgo=';
+import { installImageMock, SRC } from './helpers/image';
 
 installImageMock({ width: 200, height: 200 });
 
@@ -16,6 +14,29 @@ describe('MaskEditorProvider', () => {
             </MaskEditorProvider>,
         );
         expect(getByText('child')).toBeInTheDocument();
+    });
+
+    it('gives a headless consumer the same focus behaviour as the component', () => {
+        // Regression guard: the keyboardScope='container' focus fix used to live in
+        // MaskEditor's JSX, so provider consumers got the scoping but never the focus, and
+        // container-scoped shortcuts silently did nothing for them.
+        const Headless = () => {
+            const { containerProps } = useMaskEditorContext();
+            return <div data-testid='surface' {...containerProps} />;
+        };
+
+        const { getByTestId } = render(
+            <MaskEditorProvider src={SRC} onDrawingChange={vi.fn()} keyboardScope='container'>
+                <Headless />
+            </MaskEditorProvider>,
+        );
+
+        const surface = getByTestId('surface');
+        expect(surface).toHaveAttribute('tabindex', '0');
+        expect(surface).toHaveAttribute('role', 'application');
+
+        fireEvent.mouseDown(surface);
+        expect(document.activeElement).toBe(surface);
     });
 
     it('exposes the full editor surface through context', () => {
@@ -35,14 +56,15 @@ describe('MaskEditorProvider', () => {
             [
                 'canvasRef',
                 'clear',
+                'containerProps',
                 'containerRef',
                 'cursorCanvasRef',
                 'cursorSize',
                 'effectiveScale',
                 'handleMouseDown',
                 'handleMouseUp',
-                'history',
                 'historyIndex',
+                'historyLength',
                 'isDrawing',
                 'isPanning',
                 'isZoomKeyDown',

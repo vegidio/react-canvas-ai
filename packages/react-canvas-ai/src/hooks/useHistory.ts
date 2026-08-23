@@ -8,7 +8,6 @@ export interface UseHistoryReturn {
     history: HistoryState[];
     historyIndex: number;
     saveToHistory: () => void;
-    restoreFromHistory: (index: number) => void;
     undo: () => void;
     redo: () => void;
     clear: () => void;
@@ -17,7 +16,17 @@ export interface UseHistoryReturn {
 interface UseHistoryOptions {
     onUndoRequest?: () => void;
     onRedoRequest?: () => void;
-    maxHistorySize?: number;
+    /**
+     * Budget for retained undo states, in bytes.
+     *
+     * Entries are full uncompressed RGBA buffers, so a count-based cap scales with canvas
+     * area: 50 states of a 1602x900 canvas is ~288 MB, and a 4096px canvas reaches into the
+     * gigabytes. Capping on total bytes keeps the ceiling flat and lets a small canvas keep
+     * proportionally more history.
+     *
+     * At least one entry is always retained, however large the canvas.
+     */
+    maxHistoryBytes?: number;
 }
 
 /** The entries and the cursor into them move together, so they are one value. */
@@ -28,12 +37,32 @@ interface HistoryStack {
 
 const EMPTY: HistoryStack = { entries: [], index: -1 };
 
+/** ~64 MB: about 45 states of a 1280x720 mask, or 11 of a 2560x1440 one. */
+const DEFAULT_MAX_HISTORY_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Drops the oldest entries until the stack fits the byte budget, always keeping the newest.
+ */
+function capToBudget(entries: HistoryState[], maxBytes: number): HistoryState[] {
+    let total = 0;
+    for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i];
+        if (!entry) continue;
+
+        total += entry.imageData.data.byteLength;
+        // `i === entries.length - 1` keeps the newest state even if it alone blows the budget:
+        // dropping it would make the save a no-op and break undo entirely.
+        if (total > maxBytes && i !== entries.length - 1) return entries.slice(i + 1);
+    }
+    return entries;
+}
+
 export function useHistory(
     context: CanvasRenderingContext2D | null,
     size: { x: number; y: number },
     options: UseHistoryOptions = {},
 ): UseHistoryReturn {
-    const { onUndoRequest, onRedoRequest, maxHistorySize = 50 } = options;
+    const { onUndoRequest, onRedoRequest, maxHistoryBytes = DEFAULT_MAX_HISTORY_BYTES } = options;
 
     const [stack, setStack] = React.useState<HistoryStack>(EMPTY);
 
@@ -66,10 +95,11 @@ export function useHistory(
         const entries = previous.entries.slice(0, previous.index + 1);
         entries.push({ imageData });
 
-        const capped = entries.slice(-maxHistorySize);
+        const capped = capToBudget(entries, maxHistoryBytes);
         commit({ entries: capped, index: capped.length - 1 });
-    }, [context, size, maxHistorySize, commit]);
+    }, [context, size, maxHistoryBytes, commit]);
 
+    /** Internal: `undo`/`redo` are the surface. Exposing this leaked a bounds contract. */
     const restoreFromHistory = React.useCallback(
         (index: number) => {
             if (!context || size.x === 0 || size.y === 0) return;
@@ -118,11 +148,10 @@ export function useHistory(
             history: stack.entries,
             historyIndex: stack.index,
             saveToHistory,
-            restoreFromHistory,
             undo,
             redo,
             clear,
         }),
-        [stack, saveToHistory, restoreFromHistory, undo, redo, clear],
+        [stack, saveToHistory, undo, redo, clear],
     );
 }

@@ -1,8 +1,11 @@
 import React from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
-import type { HistoryState } from './useHistory';
+
+export { MaskEditorDefaults } from '../internal/defaults';
+
 import { paintMaskDot, recolorMask } from '../internal/canvas';
+import { MaskEditorDefaults } from '../internal/defaults';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
 import { useBrushCursor, useBrushSizeWheel, useCursorPainter } from '../internal/useBrush';
@@ -107,25 +110,39 @@ export interface UseMaskEditorProps {
 
 export type { KeyboardScope };
 
-export interface MaskEditorCanvasRef {
-    maskCanvas: HTMLCanvasElement | null;
-    undo: () => void;
-    redo: () => void;
-    clear: () => void;
-    resetZoom: () => void;
-    setPan: (x: number, y: number) => void;
-    zoomIn: () => void;
-    zoomOut: () => void;
+/**
+ * Props for the element that owns the editor's keyboard and focus behaviour. Spread these
+ * onto the scrolling container that wraps the canvas stack.
+ *
+ * Returned from the hook rather than baked into `MaskEditor`, so a headless consumer
+ * building its own layout gets the same behaviour — `keyboardScope: 'container'` used to
+ * work only for the component, because the focus handling lived in its JSX.
+ */
+export interface MaskEditorContainerProps {
+    ref: React.RefObject<HTMLDivElement | null>;
+    role: 'application';
+    tabIndex: 0;
+    onKeyDown: (e: React.KeyboardEvent) => void;
+    onMouseDown: () => void;
 }
 
 export interface UseMaskEditorReturn {
     canvasRef: React.RefObject<HTMLCanvasElement | null>;
+    /** Spread onto the element wrapping the canvas stack. See {@link MaskEditorContainerProps}. */
+    containerProps: MaskEditorContainerProps;
     clear: () => void;
     cursorCanvasRef: React.RefObject<HTMLCanvasElement | null>;
     cursorSize: number;
     handleMouseDown: (e: React.MouseEvent<HTMLCanvasElement>) => void;
     handleMouseUp: (e: React.MouseEvent<HTMLCanvasElement>) => void;
-    history: HistoryState[];
+    /**
+     * How many undo states are retained.
+     *
+     * A count rather than the entries themselves: each is a full uncompressed RGBA buffer,
+     * and handing the array out kept the whole stack alive for as long as a consumer held
+     * the hook's return value.
+     */
+    historyLength: number;
     historyIndex: number;
     isDrawing: boolean;
     key: number;
@@ -138,7 +155,8 @@ export interface UseMaskEditorReturn {
     size: Point;
     undo: () => void;
     scale: number;
-    setScale: React.Dispatch<React.SetStateAction<number>>;
+    /** Sets the zoom, clamped to `[minScale, maxScale]`, moving the transform with it. */
+    setScale: (scale: number) => void;
     transform: Transform;
     containerRef: React.RefObject<HTMLDivElement | null>;
     resetZoom: () => void;
@@ -150,17 +168,17 @@ export interface UseMaskEditorReturn {
     zoomOut: () => void;
 }
 
-export const MaskEditorDefaults = {
-    cursorSize: 10,
-    maskOpacity: 0.4,
-    maskColor: '#ffffff',
-    maskBlendMode: 'normal' as MaskBlendMode,
-    scale: 1,
-    minScale: 0.8,
-    maxScale: 4,
-    enableWheelZoom: true,
-    constrainPan: true,
-    keyboardScope: 'window' as KeyboardScope,
+/**
+ * The imperative surface exposed through `MaskEditor`'s `canvasRef`.
+ *
+ * Derived from the hook's return rather than restated, so adding a method is one edit
+ * instead of three that have to agree.
+ */
+export type MaskEditorCanvasRef = Pick<
+    UseMaskEditorReturn,
+    'undo' | 'redo' | 'clear' | 'resetZoom' | 'setPan' | 'zoomIn' | 'zoomOut'
+> & {
+    maskCanvas: HTMLCanvasElement | null;
 };
 
 /** Painting with the secondary button or shift held erases back to the mask background. */
@@ -169,14 +187,12 @@ const ERASE_COLOR = '#ffffff';
 /** How long the mask report waits for the stroke to settle. */
 const MASK_DEBOUNCE_MS = 300;
 
-const MAX_HISTORY_SIZE = 50;
-
 export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
     const {
         src,
         crossOrigin,
-        maxWidth = 1240,
-        maxHeight = 1240,
+        maxWidth = MaskEditorDefaults.maxWidth,
+        maxHeight = MaskEditorDefaults.maxHeight,
         cursorSize: initialCursorSize = MaskEditorDefaults.cursorSize,
         maskColor = MaskEditorDefaults.maskColor,
         maskBlendMode = MaskEditorDefaults.maskBlendMode,
@@ -225,11 +241,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         onPanChange,
     });
 
-    const historyManager = useHistory(maskContext, size, {
-        onUndoRequest,
-        onRedoRequest,
-        maxHistorySize: MAX_HISTORY_SIZE,
-    });
+    const historyManager = useHistory(maskContext, size, { onUndoRequest, onRedoRequest });
 
     // Latest-value mirrors, for the handlers that must not be re-attached on every render.
     // The brush hooks below do their own mirroring; these are the ones this hook reads
@@ -443,18 +455,42 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [undo, redo]);
 
+    const handleContainerKeyDown = React.useCallback((e: React.KeyboardEvent) => {
+        // Swallow Space so the page does not scroll under a pan.
+        if (e.code === 'Space') e.preventDefault();
+    }, []);
+
+    // The canvases call preventDefault on mousedown, which suppresses the focus change a
+    // click would normally cause. Container-scoped shortcuts are gated on focus, so without
+    // this a user could click the editor and find Ctrl+Z did nothing.
+    const handleContainerMouseDown = React.useCallback(() => {
+        if (keyboardScopeRef.current === 'container') containerRef.current?.focus();
+    }, []);
+
+    const containerProps = React.useMemo<MaskEditorContainerProps>(
+        () => ({
+            ref: containerRef,
+            role: 'application',
+            tabIndex: 0,
+            onKeyDown: handleContainerKeyDown,
+            onMouseDown: handleContainerMouseDown,
+        }),
+        [handleContainerKeyDown, handleContainerMouseDown],
+    );
+
     return React.useMemo(
         () => ({
             canvasRef,
             clear,
+            containerProps,
             containerRef,
             cursorCanvasRef,
             cursorSize: currentCursorSize,
             effectiveScale: zoomPanState.effectiveScale,
             handleMouseDown,
             handleMouseUp,
-            history: historyManager.history,
             historyIndex: historyManager.historyIndex,
+            historyLength: historyManager.history.length,
             isDrawing,
             isPanning: zoomPanState.isPanning,
             isZoomKeyDown: zoomPanState.isZoomKeyDown,
@@ -477,6 +513,7 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         }),
         [
             clear,
+            containerProps,
             currentCursorSize,
             handleMouseDown,
             handleMouseUp,

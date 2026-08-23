@@ -4,11 +4,17 @@ import { useHistory } from '../src/hooks/useHistory';
 
 const SIZE = { x: 10, y: 10 };
 
-/** A minimal 2d context stub whose snapshots are distinguishable by id. */
+/** Bytes each stubbed snapshot reports, so a byte budget can be expressed in whole entries. */
+const ENTRY_BYTES = 64;
+
+/**
+ * A minimal 2d context stub whose snapshots are distinguishable by id, and which reports a
+ * fixed byte size so the history byte cap can be exercised.
+ */
 function makeContext() {
     let next = 0;
     return {
-        getImageData: vi.fn(() => ({ id: next++ }) as unknown as ImageData),
+        getImageData: vi.fn(() => ({ id: next++, data: new Uint8ClampedArray(ENTRY_BYTES) }) as unknown as ImageData),
         putImageData: vi.fn(),
         clearRect: vi.fn(),
     } as unknown as CanvasRenderingContext2D & {
@@ -113,8 +119,8 @@ describe('useHistory', () => {
         expect(result.current.historyIndex).toBe(2);
     });
 
-    it('caps the stack at maxHistorySize', () => {
-        const { result } = renderHook(() => useHistory(ctx, SIZE, { maxHistorySize: 3 }));
+    it('drops the oldest entries once the byte budget is exceeded', () => {
+        const { result } = renderHook(() => useHistory(ctx, SIZE, { maxHistoryBytes: ENTRY_BYTES * 3 }));
 
         for (let i = 0; i < 5; i++) act(() => result.current.saveToHistory());
 
@@ -122,24 +128,43 @@ describe('useHistory', () => {
         expect(result.current.historyIndex).toBe(2);
     });
 
-    it('defaults the cap to 50 entries', () => {
-        const { result } = renderHook(() => useHistory(ctx, SIZE));
+    it('keeps the newest state even when it alone exceeds the budget', () => {
+        // Otherwise a canvas larger than the budget would make every save a no-op, which
+        // would break undo outright rather than just limiting how far back it goes.
+        const { result } = renderHook(() => useHistory(ctx, SIZE, { maxHistoryBytes: 1 }));
 
-        for (let i = 0; i < 60; i++) act(() => result.current.saveToHistory());
+        act(() => result.current.saveToHistory());
+        act(() => result.current.saveToHistory());
 
-        expect(result.current.history).toHaveLength(50);
-        expect(result.current.historyIndex).toBe(49);
+        expect(result.current.history).toHaveLength(1);
+        expect(result.current.historyIndex).toBe(0);
     });
 
-    it('ignores out-of-range restore indices', () => {
+    it('scales the retained count to the entry size rather than a fixed number', () => {
+        const small = renderHook(() => useHistory(ctx, SIZE, { maxHistoryBytes: ENTRY_BYTES * 10 }));
+        for (let i = 0; i < 20; i++) act(() => small.result.current.saveToHistory());
+
+        expect(small.result.current.history).toHaveLength(10);
+    });
+
+    it('stops at the ends of the stack instead of running off them', () => {
         const { result } = renderHook(() => useHistory(ctx, SIZE));
         act(() => result.current.saveToHistory());
+
+        // Back past the only entry lands on the empty canvas, at index -1.
+        act(() => result.current.undo());
+        expect(result.current.historyIndex).toBe(-1);
+
         ctx.putImageData.mockClear();
 
-        act(() => result.current.restoreFromHistory(-2));
-        act(() => result.current.restoreFromHistory(result.current.history.length));
+        // A second undo would be index -2, and a redo past the end index 1: both out of
+        // range, so neither may restore anything.
+        act(() => result.current.undo());
+        act(() => result.current.redo());
+        act(() => result.current.redo());
 
-        expect(ctx.putImageData).not.toHaveBeenCalled();
+        expect(ctx.putImageData).toHaveBeenCalledTimes(1); // only the in-range redo
+        expect(result.current.historyIndex).toBe(0);
     });
 
     it('clear() empties the stack and wipes the canvas', () => {

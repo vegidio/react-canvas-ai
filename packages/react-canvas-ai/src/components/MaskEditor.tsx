@@ -1,6 +1,7 @@
 import React from 'react';
 import type { MaskEditorCanvasRef, UseMaskEditorProps } from '../hooks/useMaskEditor';
 import { useMaskEditor } from '../hooks/useMaskEditor';
+import { maskEditorLayerStyles } from './MaskEditorLayers';
 
 export type { MaskEditorCanvasRef };
 
@@ -53,15 +54,6 @@ const containerStyle: React.CSSProperties = {
     overflow: 'hidden',
 };
 
-// The three canvases are stacked absolutely on top of each other. Without these the
-// layers collapse into normal flow and the editor renders as three stacked images.
-const layerStyle: React.CSSProperties = {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    display: 'block',
-};
-
 export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
     const { canvasRef: externalMaskCanvasRef, className, style, ...hookProps } = props;
 
@@ -79,7 +71,7 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
         size,
         undo,
         transform,
-        containerRef,
+        containerProps,
         resetZoom,
         isPanning,
         isZoomKeyDown,
@@ -128,19 +120,14 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
 
     const containerCursorStyle = isPanning ? 'grabbing' : isZoomKeyDown ? 'zoom-in' : 'default';
 
-    const handleKeyDown = React.useCallback((e: React.KeyboardEvent) => {
-        if (e.code === 'Space') {
-            e.preventDefault();
-        }
-    }, []);
-
-    // The canvases call preventDefault on mousedown, which suppresses the focus change a
-    // click would normally cause. Container-scoped shortcuts are gated on focus, so without
-    // this a user could click the editor and find Ctrl+Z did nothing.
-    const scopeToContainer = props.keyboardScope === 'container';
-    const handleContainerMouseDown = React.useCallback(() => {
-        if (scopeToContainer) containerRef.current?.focus();
-    }, [scopeToContainer, containerRef]);
+    // Shared with the exported `MaskEditorLayers`, so a headless consumer and this component
+    // cannot drift apart on the stacking contract.
+    const layerStyles = maskEditorLayerStyles({
+        size,
+        maskOpacity,
+        maskBlendMode,
+        cursor: containerCursorStyle,
+    });
 
     // Stable across server and client renders; Math.random() here was a hydration mismatch.
     const uniqueId = React.useId();
@@ -156,39 +143,22 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
                 ...style,
             }}
         >
-            <div
-                className='react-mask-editor-inner'
-                ref={containerRef}
-                style={innerStyle}
-                role='application'
-                // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-driven canvas surface; must be focusable to intercept Space before the page scrolls, and to scope shortcuts when keyboardScope is 'container'
-                tabIndex={0}
-                onKeyDown={handleKeyDown}
-                onMouseDown={handleContainerMouseDown}
-            >
+            <div className='react-mask-editor-inner' style={innerStyle} {...containerProps}>
                 <div className='canvas-container' style={containerStyle}>
                     <div className='all-canvases' style={canvasLayerStyle}>
                         <canvas
                             key={key}
                             ref={canvasRef}
-                            style={{ ...layerStyle, width: size.x, height: size.y, zIndex: 1 }}
                             width={size.x}
                             height={size.y}
+                            style={layerStyles.base}
                             className='react-mask-editor-base-canvas'
                         />
                         <canvas
                             ref={maskCanvasRef}
                             width={size.x}
                             height={size.y}
-                            style={{
-                                ...layerStyle,
-                                width: size.x,
-                                height: size.y,
-                                opacity: maskOpacity,
-                                mixBlendMode: maskBlendMode,
-                                pointerEvents: 'none',
-                                zIndex: 2,
-                            }}
+                            style={layerStyles.mask}
                             className='react-mask-editor-mask-canvas'
                         />
                         <canvas
@@ -197,13 +167,7 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
                             height={size.y}
                             onMouseUp={handleMouseUp}
                             onMouseDown={handleMouseDown}
-                            style={{
-                                ...layerStyle,
-                                width: size.x,
-                                height: size.y,
-                                cursor: containerCursorStyle,
-                                zIndex: 3,
-                            }}
+                            style={layerStyles.cursor}
                             className='react-mask-editor-cursor-canvas'
                         />
                     </div>

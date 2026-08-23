@@ -2,6 +2,7 @@ import React from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import { acquireBodyPanCursor } from '../internal/bodyPanCursor';
+import { MaskEditorDefaults } from '../internal/defaults';
 import { calculateBaseScale, clampPan, toImageCoordinates } from '../internal/geometry';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { useEventCallback, useLatest } from '../internal/useLatest';
@@ -34,7 +35,11 @@ export interface ZoomPanState {
 }
 
 export interface ZoomPanActions {
-    setScale: React.Dispatch<React.SetStateAction<number>>;
+    /**
+     * Sets the zoom, clamped to `[minScale, maxScale]`. Moves the transform with it — the raw
+     * state dispatch this replaced left them disagreeing.
+     */
+    setScale: (scale: number) => void;
     resetZoom: () => void;
     setPan: (x: number, y: number) => void;
     getImageCoordinates: (clientX: number, clientY: number) => Point;
@@ -50,12 +55,12 @@ export function useZoomPan(
     options: ZoomPanOptions = {},
 ): [ZoomPanState, ZoomPanActions] {
     const {
-        initialScale = 1,
-        minScale = 0.8,
-        maxScale = 4,
-        enableWheelZoom = true,
-        constrainPan = true,
-        keyboardScope = 'window',
+        initialScale = MaskEditorDefaults.scale,
+        minScale = MaskEditorDefaults.minScale,
+        maxScale = MaskEditorDefaults.maxScale,
+        enableWheelZoom = MaskEditorDefaults.enableWheelZoom,
+        constrainPan = MaskEditorDefaults.constrainPan,
+        keyboardScope = MaskEditorDefaults.keyboardScope,
         onScaleChange,
         onPanChange,
     } = options;
@@ -65,7 +70,7 @@ export function useZoomPan(
     const notifyScaleChange = useEventCallback<[number]>(onScaleChange);
     const notifyPanChange = useEventCallback<[number, number]>(onPanChange);
 
-    const [scale, setScale] = React.useState(initialScale);
+    const [scale, setScaleState] = React.useState(initialScale);
     const [transform, setTransform] = React.useState<Transform>({
         scale: initialScale,
         translateX: 0,
@@ -79,8 +84,8 @@ export function useZoomPan(
 
     // Mirrors of the state above. Event handlers and observers read these instead of closing
     // over the rendered values, which is what lets their effects attach exactly once.
-    // `useLatest` re-syncs each on commit, so a write that bypassed `commitScale` and friends
-    // (the raw `setScale` handed to consumers) still lands.
+    // Every write goes through `commitScale`/`commitTransform`, which update the ref eagerly;
+    // `useLatest` re-syncs on commit as a backstop.
     const scaleRef = useLatest(scale);
     const transformRef = useLatest(transform);
     const baseScaleRef = useLatest(baseScale);
@@ -102,7 +107,7 @@ export function useZoomPan(
     // each other's result, and keeps side effects out of the state updaters entirely.
     const commitScale = React.useCallback((next: number) => {
         scaleRef.current = next;
-        setScale(next);
+        setScaleState(next);
     }, []);
 
     const commitTransform = React.useCallback((next: Transform) => {
@@ -289,6 +294,18 @@ export function useZoomPan(
         [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
     );
 
+    const setScale = React.useCallback(
+        (next: number) => {
+            const clamped = Math.max(minScale, Math.min(maxScale, next));
+            if (clamped === scaleRef.current) return;
+
+            commitScale(clamped);
+            commitTransform({ ...transformRef.current, scale: clamped });
+            notifyScaleChange(clamped);
+        },
+        [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
+    );
+
     const zoomIn = React.useCallback(() => stepZoom(ZOOM_STEP), [stepZoom]);
     const zoomOut = React.useCallback(() => stepZoom(-ZOOM_STEP), [stepZoom]);
 
@@ -459,7 +476,7 @@ export function useZoomPan(
 
     const actions = React.useMemo<ZoomPanActions>(
         () => ({ setScale, resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut }),
-        [resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut],
+        [setScale, resetZoom, setPan, getImageCoordinates, zoomIn, zoomOut],
     );
 
     // No memo around the tuple: it is destructured at the call site, so its identity is
