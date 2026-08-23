@@ -419,6 +419,9 @@ export function useZoomPan(
         [constrainPan, onPanChange, contentSize, containerRef],
     );
 
+    // Release the page cursor if we unmount mid-pan.
+    React.useEffect(() => stopBodyPanCursor, []);
+
     // Blur handler
     const handleBlur = React.useCallback(() => {
         setIsPanning(false);
@@ -530,7 +533,6 @@ export function useZoomPan(
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', handleMouseUp);
             container.removeEventListener('mouseleave', handleMouseLeave);
-            stopBodyPanCursor();
         };
     }, [
         isPanning,

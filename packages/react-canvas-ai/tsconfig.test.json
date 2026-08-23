@@ -1,0 +1,12 @@
+{
+    // Tests and build configs never emit declarations, so isolatedDeclarations - which
+    // exists purely so oxc can generate .d.ts without the TypeScript compiler - would only
+    // force noise here.
+    "extends": "./tsconfig.json",
+    "compilerOptions": {
+        "isolatedDeclarations": false,
+        "declaration": false,
+        "types": ["vitest/globals", "@testing-library/jest-dom"]
+    },
+    "include": ["src", "tests", "tsdown.config.ts", "vitest.config.ts"]
+}
