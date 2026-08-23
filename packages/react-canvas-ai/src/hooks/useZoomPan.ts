@@ -92,6 +92,9 @@ export function useZoomPan(
     // back on the element on every single mousemove.
     const lastMousePositionRef = React.useRef<Point>({ x: 0, y: 0 });
     const releasePanCursorRef = React.useRef<(() => void) | null>(null);
+    // Latest un-committed pointer position during a pan, and the frame scheduled to apply it.
+    const pendingPanRef = React.useRef<Point | null>(null);
+    const frameRef = React.useRef<number | null>(null);
     // `null` until the first successful fit, which is what makes that first fit unconditional.
     const lastContentSizeRef = React.useRef<Point | null>(null);
 
@@ -388,21 +391,41 @@ export function useZoomPan(
             setPanning(true);
         };
 
+        // Pointer devices deliver moves well above display refresh, and every commit here is
+        // a React state update plus a full re-render of the editor. Coalescing to one commit
+        // per frame drops the redundant renders; the delta is measured from the position at
+        // the last commit, so no movement is lost.
+        //
+        // Only the pan commit is coalesced. The mask-painting path deliberately still paints
+        // per event: one dab per frame would leave visible gaps in a fast stroke.
+        const flushPan = () => {
+            frameRef.current = null;
+
+            const pending = pendingPanRef.current;
+            if (!pending || !isPanningRef.current) return;
+            pendingPanRef.current = null;
+
+            const last = lastMousePositionRef.current;
+            const current = transformRef.current;
+            const deltaX = (pending.x - last.x) / current.scale;
+            const deltaY = (pending.y - last.y) / current.scale;
+
+            setPan(current.translateX + deltaX, current.translateY + deltaY);
+            lastMousePositionRef.current = pending;
+        };
+
         const handleMouseMove = (e: MouseEvent) => {
             if (!isPanningRef.current) return;
             e.preventDefault();
 
-            const last = lastMousePositionRef.current;
-            const current = transformRef.current;
-            const deltaX = (e.clientX - last.x) / current.scale;
-            const deltaY = (e.clientY - last.y) / current.scale;
-
-            setPan(current.translateX + deltaX, current.translateY + deltaY);
-            lastMousePositionRef.current = { x: e.clientX, y: e.clientY };
+            pendingPanRef.current = { x: e.clientX, y: e.clientY };
+            frameRef.current ??= requestAnimationFrame(flushPan);
         };
 
         const stopPanning = () => {
             if (!isPanningRef.current) return;
+            // Land the last move rather than dropping it on the floor.
+            flushPan();
             setPanning(false);
             releasePanCursor();
         };
@@ -413,6 +436,10 @@ export function useZoomPan(
         container.addEventListener('mouseleave', stopPanning);
 
         return () => {
+            if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+            frameRef.current = null;
+            pendingPanRef.current = null;
+
             container.removeEventListener('mousedown', handleMouseDown);
             window.removeEventListener('mousemove', handleMouseMove);
             window.removeEventListener('mouseup', stopPanning);

@@ -31,6 +31,9 @@ function setup(options: ZoomPanOptions = {}, contentSize = CONTENT) {
     return renderHook(() => useZoomPan(ref, contentSize, options));
 }
 
+/** Let a coalesced rAF pan commit land. */
+const flushFrame = () => act(async () => void (await new Promise(requestAnimationFrame)));
+
 /** Raise `transform.scale` above 1, which is what actually gates panning. */
 function zoomInto(result: { current: readonly [unknown, { zoomIn: () => void }] }) {
     act(() => result.current[1].zoomIn());
@@ -394,7 +397,7 @@ describe('multi-instance body cursor', () => {
 });
 
 describe('pan listener stability', () => {
-    it('accumulates a drag without re-registering its listeners on every move', () => {
+    it('accumulates a drag without re-registering its listeners on every move', async () => {
         const { result } = setup({ constrainPan: false });
         zoomInto(result);
 
@@ -409,14 +412,58 @@ describe('pan listener stability', () => {
                 window.dispatchEvent(new MouseEvent('mousemove', { clientX: i * 10, clientY: 0 }));
             });
         }
+        await flushFrame();
 
         // transform.scale is 1.4 after zoomInto, so each 10px step moves 10 / 1.4 image px.
+        // Coalescing must not lose any of it: the delta is measured from the last commit.
         expect(result.current[0].transform.translateX).toBeCloseTo(50 / 1.4);
         expect(addSpy.mock.calls.filter(([type]) => type === 'mousemove')).toHaveLength(0);
 
         act(() => {
             window.dispatchEvent(new MouseEvent('mouseup'));
         });
+    });
+
+    it('commits once per frame rather than once per move', async () => {
+        const onPanChange = vi.fn();
+        const { result } = setup({ constrainPan: false, onPanChange });
+        zoomInto(result);
+
+        act(() => {
+            container.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true, clientX: 0, clientY: 0 }));
+        });
+        onPanChange.mockClear();
+
+        for (let i = 1; i <= 5; i++) {
+            act(() => {
+                window.dispatchEvent(new MouseEvent('mousemove', { clientX: i * 10, clientY: 0 }));
+            });
+        }
+        await flushFrame();
+
+        expect(onPanChange).toHaveBeenCalledTimes(1);
+
+        act(() => {
+            window.dispatchEvent(new MouseEvent('mouseup'));
+        });
+    });
+
+    it('lands the final move when the drag ends before the frame fires', async () => {
+        const { result } = setup({ constrainPan: false });
+        zoomInto(result);
+
+        act(() => {
+            container.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true, clientX: 0, clientY: 0 }));
+        });
+        act(() => {
+            window.dispatchEvent(new MouseEvent('mousemove', { clientX: 30, clientY: 0 }));
+        });
+        // No frame in between: mouseup has to flush the pending move itself.
+        act(() => {
+            window.dispatchEvent(new MouseEvent('mouseup'));
+        });
+
+        expect(result.current[0].transform.translateX).toBeCloseTo(30 / 1.4);
     });
 });
 
