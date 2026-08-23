@@ -1,8 +1,8 @@
 # Playground
 
 A Vite dev app for exercising `react-canvas-ai` against the workspace copy of the library
-(`react-canvas-ai: workspace:*`), not a published release. It is private and excluded from
-the changesets release.
+(`react-canvas-ai: workspace:*`), not a published release. It is private and never
+published to npm.
 
 ## Running it
 

@@ -43,7 +43,7 @@ There is **no stylesheet to import** — the component applies everything it nee
 
 > **Versioning:** this package uses CalVer (`YY.M.MICRO`, e.g. `26.8.0`). Version numbers
 > carry no semver meaning, so a `^` range *can* pull in breaking changes. Pin an exact
-> version if that matters to you, and check the changelog before upgrading.
+> version if that matters to you.
 
 ---
 
@@ -556,9 +556,16 @@ pnpm check            # what CI runs: biome + typecheck + tests
 pnpm build            # ESM + CJS + .d.ts
 ```
 
-Releases go through [Changesets](https://github.com/changesets/changesets)
-(`pnpm changeset`); `scripts/calver.mjs` stamps the CalVer version afterwards, since
-Changesets only understands semver.
+Releases are cut by pushing a CalVer tag:
+
+```bash
+git tag 26.8.0
+git push origin 26.8.0
+```
+
+The release workflow stamps that tag onto `packages/react-canvas-ai/package.json` (via
+`scripts/set-version.mjs`) and publishes to npm. The version in the manifest on `main` is
+only a placeholder between releases — the tag is the source of truth.
 
 ### Why the build is set up this way
 
