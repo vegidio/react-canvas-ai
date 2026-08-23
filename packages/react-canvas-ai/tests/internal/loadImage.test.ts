@@ -40,6 +40,39 @@ describe('loadImage', () => {
         expect(fetchSpy).toHaveBeenCalledWith('https://example.com/a.png', expect.anything());
     });
 
+    it('hands the decoder a blob URL rather than a base64 data URL', async () => {
+        restore = mockImageLoad({ width: 10, height: 10 });
+        stubFetch();
+        const created = vi.spyOn(URL, 'createObjectURL');
+
+        const img = await loadImage('https://example.com/a.png');
+
+        expect(created).toHaveBeenCalledTimes(1);
+        expect(img.src).toBe(created.mock.results[0]?.value);
+        expect(img.src.startsWith('blob:')).toBe(true);
+    });
+
+    it('revokes the blob URL once the image has decoded', async () => {
+        restore = mockImageLoad({ width: 10, height: 10 });
+        stubFetch();
+        const created = vi.spyOn(URL, 'createObjectURL');
+        const revoked = vi.spyOn(URL, 'revokeObjectURL');
+
+        await loadImage('https://example.com/a.png');
+
+        expect(revoked).toHaveBeenCalledWith(created.mock.results[0]?.value);
+    });
+
+    it('revokes the blob URL when the load fails', async () => {
+        restore = mockImageLoad({ width: 10, height: 10, fail: true });
+        stubFetch();
+        const created = vi.spyOn(URL, 'createObjectURL');
+        const revoked = vi.spyOn(URL, 'revokeObjectURL');
+
+        await expect(loadImage('https://example.com/a.png')).rejects.toThrow('Failed to load image');
+        expect(revoked).toHaveBeenCalledWith(created.mock.results[0]?.value);
+    });
+
     it('falls back to a direct load when the fetch fails', async () => {
         restore = mockImageLoad({ width: 10, height: 10 });
         vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('network down'));

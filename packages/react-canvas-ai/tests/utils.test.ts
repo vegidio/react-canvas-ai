@@ -1,37 +1,45 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { hexToRgb, toMask } from '../src/utils';
-import { makeSeededCanvas } from './helpers/canvas';
+import { captureScratchCanvas, makeSeededCanvas } from './helpers/canvas';
 
 describe('toMask', () => {
     // Three pixels: pure black, near-black, and white - each with a distinct alpha so we
-    // can prove the original buffer is restored byte for byte.
-    const seed = () =>
-        makeSeededCanvas(3, 1, [
-            0,
-            0,
-            0,
-            10, // pure black
-            1,
-            0,
-            0,
-            255, // near-black
-            255,
-            255,
-            255,
-            128, // white
-        ]);
+    // can prove the caller's buffer is left alone.
+    const SEED = [
+        0,
+        0,
+        0,
+        10, // pure black
+        1,
+        0,
+        0,
+        255, // near-black
+        255,
+        255,
+        255,
+        128, // white
+    ];
+    const seed = () => makeSeededCanvas(3, 1, SEED);
 
-    it('returns the data URL produced by the canvas', () => {
-        const { canvas } = seed();
-        expect(toMask(canvas)).toBe('data:image/png;base64,STUB');
+    let scratch: ReturnType<typeof captureScratchCanvas>;
+    beforeEach(() => {
+        scratch = captureScratchCanvas();
+    });
+    afterEach(() => {
+        scratch.restore();
     });
 
-    it('binarizes to pure black and white at export time', () => {
-        const { canvas, snapshots } = seed();
+    it('returns the data URL of the thresholded copy, not the source canvas', () => {
+        const { canvas } = seed();
+        expect(toMask(canvas)).toBe('data:image/png;base64,SCRATCH');
+    });
+
+    it('binarizes to pure black and white', () => {
+        const { canvas } = seed();
         toMask(canvas);
 
-        expect(snapshots).toHaveLength(1);
-        expect(snapshots[0]).toEqual([
+        expect(scratch.exported).toHaveLength(1);
+        expect(scratch.exported[0]).toEqual([
             0,
             0,
             0,
@@ -48,25 +56,18 @@ describe('toMask', () => {
     });
 
     it('forces alpha to fully opaque on every pixel', () => {
-        const { canvas, snapshots } = seed();
+        const { canvas } = seed();
         toMask(canvas);
-        const alphas = snapshots[0]?.filter((_, i) => i % 4 === 3);
+        const alphas = scratch.exported[0]?.filter((_, i) => i % 4 === 3);
         expect(alphas).toEqual([255, 255, 255]);
     });
 
-    it('restores the original pixels after exporting', () => {
-        const { canvas, imageData } = seed();
+    it("never writes to the caller's canvas", () => {
+        const { canvas, ctx, sourcePixels } = seed();
         toMask(canvas);
-        expect([...imageData.data]).toEqual([0, 0, 0, 10, 1, 0, 0, 255, 255, 255, 255, 128]);
-    });
 
-    it('writes the canvas twice: binarized, then restored', () => {
-        const { canvas, ctx } = seed();
-        toMask(canvas);
-        expect(ctx.putImageData).toHaveBeenCalledTimes(2);
-        for (const call of ctx.putImageData.mock.calls) {
-            expect(call.slice(1)).toEqual([0, 0]);
-        }
+        expect(ctx.putImageData).not.toHaveBeenCalled();
+        expect(sourcePixels()).toEqual(SEED);
     });
 
     it('reads the full canvas area', () => {
@@ -92,6 +93,21 @@ describe('toMask', () => {
         } as unknown as HTMLCanvasElement;
 
         expect(toMask(canvas)).toBe('data:image/png;base64,NOCTX');
+    });
+
+    it('falls back to the source canvas when the scratch context is unavailable', () => {
+        scratch.restore();
+        vi.spyOn(document, 'createElement').mockImplementation(
+            (() =>
+                ({
+                    width: 0,
+                    height: 0,
+                    getContext: () => null,
+                }) as unknown as HTMLCanvasElement) as typeof document.createElement,
+        );
+
+        const { canvas } = seed();
+        expect(toMask(canvas)).toBe('data:image/png;base64,SOURCE');
     });
 });
 

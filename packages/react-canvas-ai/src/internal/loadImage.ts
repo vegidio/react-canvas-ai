@@ -6,22 +6,20 @@ export interface LoadImageOptions {
 const abortError = (): DOMException => new DOMException('Image load aborted', 'AbortError');
 
 /**
- * Reads a remote image through `fetch` and hands the decoder a data URL instead of the
+ * Reads a remote image through `fetch` and hands the decoder a blob URL instead of the
  * original URL. Doing the transfer ourselves keeps the canvas untainted — and therefore
  * `getImageData`-able for the mask — even when the response omits the CORS headers a direct
  * `img.src` assignment would require.
+ *
+ * A blob URL rather than a data URL: base64 inflates the payload by a third and would
+ * materialise the whole image as a JS string before the decoder ever sees it. The caller
+ * owns revoking the returned URL.
  */
-const fetchAsDataUrl = async (url: string, signal?: AbortSignal): Promise<string> => {
+const fetchAsObjectUrl = async (url: string, signal?: AbortSignal): Promise<string> => {
     const response = await fetch(url, signal ? { signal } : {});
     if (!response.ok) throw new Error(`Failed to fetch image: ${response.statusText}`);
 
-    const blob = await response.blob();
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onloadend = () => resolve(reader.result as string);
-        reader.onerror = () => reject(reader.error ?? new Error('Failed to read image blob'));
-        reader.readAsDataURL(blob);
-    });
+    return URL.createObjectURL(await response.blob());
 };
 
 /**
@@ -40,9 +38,11 @@ export async function loadImage(src: string, options: LoadImageOptions = {}): Pr
     img.crossOrigin = crossOrigin || 'anonymous';
 
     let resolvedSrc = src;
+    let objectUrl: string | null = null;
     if (src.startsWith('http')) {
         try {
-            resolvedSrc = await fetchAsDataUrl(src, signal);
+            objectUrl = await fetchAsObjectUrl(src, signal);
+            resolvedSrc = objectUrl;
         } catch (error) {
             if (signal?.aborted) throw abortError();
             // The fetch route is an optimisation, not a requirement — let the browser try.
@@ -51,12 +51,21 @@ export async function loadImage(src: string, options: LoadImageOptions = {}): Pr
         }
     }
 
-    if (signal?.aborted) throw abortError();
+    if (signal?.aborted) {
+        if (objectUrl) URL.revokeObjectURL(objectUrl);
+        throw abortError();
+    }
 
     return new Promise<HTMLImageElement>((resolve, reject) => {
+        // Revoke on every exit: once the image has decoded, the browser holds its own
+        // reference to the bitmap, so keeping the URL alive only leaks the blob.
         const detach = () => {
             img.onload = null;
             img.onerror = null;
+            if (objectUrl) {
+                URL.revokeObjectURL(objectUrl);
+                objectUrl = null;
+            }
         };
 
         img.onload = () => {

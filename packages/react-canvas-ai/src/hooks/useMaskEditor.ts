@@ -4,6 +4,7 @@ import type { KeyboardScope } from '../internal/keyboard';
 import type { HistoryState } from './useHistory';
 import { drawCursorCircle, paintMaskDot, recolorMask } from '../internal/canvas';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
+import { loadImage } from '../internal/loadImage';
 import { useCanvas2dContext } from '../internal/useCanvas2dContext';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 import { hexToRgb, toMask } from '../utils';
@@ -288,19 +289,19 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         ctx.drawImage(image, 0, 0, size.x, size.y);
     }, [image, size]);
 
-    // Load an existing mask, once per distinct value.
+    // Load an existing mask, once per distinct value. This goes through `loadImage` rather
+    // than a second hand-rolled `new Image()`: it already owns handler detaching and the
+    // guarantee that a superseded load cannot win a race against the one that replaced it.
     React.useEffect(() => {
         if (!initialMask || !maskContext || size.x === 0 || size.y === 0) return;
         if (initialMaskAppliedRef.current === initialMask) return;
 
-        let cancelled = false;
-        const img = new window.Image();
-        img.crossOrigin = 'anonymous';
+        const controller = new AbortController();
 
-        img.onload = () => {
-            if (cancelled || !maskCanvasRef.current) return;
+        loadImage(initialMask, { signal: controller.signal })
+            .then((img) => {
+                if (controller.signal.aborted || !maskCanvasRef.current) return;
 
-            try {
                 maskContext.clearRect(0, 0, size.x, size.y);
                 maskContext.fillStyle = ERASE_COLOR;
                 maskContext.fillRect(0, 0, size.x, size.y);
@@ -311,22 +312,13 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
                 reportMask();
 
                 initialMaskAppliedRef.current = initialMask;
-            } catch (error) {
-                console.error('[MaskEditor] Error applying initial mask:', error);
-            }
-        };
+            })
+            .catch((error: unknown) => {
+                if (controller.signal.aborted) return;
+                console.error('[MaskEditor] Failed to apply initial mask:', error);
+            });
 
-        img.onerror = () => {
-            console.error('[MaskEditor] Failed to load initial mask');
-        };
-
-        img.src = initialMask;
-
-        return () => {
-            cancelled = true;
-            img.onload = null;
-            img.onerror = null;
-        };
+        return () => controller.abort();
     }, [initialMask, maskContext, size, reportMask]);
 
     React.useEffect(() => {
