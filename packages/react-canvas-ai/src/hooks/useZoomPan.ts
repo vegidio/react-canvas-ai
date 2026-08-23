@@ -126,14 +126,51 @@ export function useZoomPan(
         [contentSize],
     );
 
+    // The container rect is read on every pointer move, but only changes on scroll, resize
+    // or a layout shift. Cache it and invalidate on those, rather than forcing a layout read
+    // per event.
+    const cachedRectRef = React.useRef<DOMRect | null>(null);
+
+    const readRect = React.useCallback((): DOMRect | null => {
+        const container = containerRef.current;
+        if (!container) return null;
+
+        cachedRectRef.current ??= container.getBoundingClientRect();
+        return cachedRectRef.current;
+    }, [containerRef]);
+
+    const invalidateRect = React.useCallback(() => {
+        cachedRectRef.current = null;
+    }, []);
+
+    React.useEffect(() => {
+        const container = containerRef.current;
+
+        // Capture phase: a scroll in any ancestor moves the container, and scroll events
+        // from a nested element do not bubble.
+        window.addEventListener('scroll', invalidateRect, true);
+        window.addEventListener('resize', invalidateRect);
+        // The pointer entering is the gesture boundary: it bounds how long a cached rect can
+        // survive, so a layout shift that moved the container without resizing it — which
+        // neither the ResizeObserver nor a scroll would catch — cannot go unnoticed across
+        // two separate interactions.
+        container?.addEventListener('mouseenter', invalidateRect);
+
+        return () => {
+            window.removeEventListener('scroll', invalidateRect, true);
+            window.removeEventListener('resize', invalidateRect);
+            container?.removeEventListener('mouseenter', invalidateRect);
+        };
+    }, [containerRef, invalidateRect]);
+
     const getImageCoordinates = React.useCallback(
         (clientX: number, clientY: number): Point => {
-            const container = containerRef.current;
-            if (!container) return { x: 0, y: 0 };
+            const rect = readRect();
+            if (!rect) return { x: 0, y: 0 };
 
-            return toImageCoordinatesWithRect(clientX, clientY, container.getBoundingClientRect());
+            return toImageCoordinatesWithRect(clientX, clientY, rect);
         },
-        [containerRef, toImageCoordinatesWithRect],
+        [readRect, toImageCoordinatesWithRect],
     );
 
     /** Re-fits the content to the container and recentres it. */
@@ -162,6 +199,7 @@ export function useZoomPan(
         // Read through the ref: closing over `recalculate` directly meant that after the
         // first resize the observer kept re-fitting to the *original* content size.
         const observer = new ResizeObserver(() => {
+            cachedRectRef.current = null;
             lastContentSizeRef.current = null;
             recalculateRef.current();
         });
@@ -215,7 +253,9 @@ export function useZoomPan(
             if (!e.ctrlKey && !e.metaKey) return;
             e.preventDefault();
 
-            const rect = container.getBoundingClientRect();
+            const rect = readRect();
+            if (!rect) return;
+
             const current = scaleRef.current;
             const newScale = Math.max(minScale, Math.min(maxScale, current - e.deltaY * 0.01));
 
@@ -226,7 +266,7 @@ export function useZoomPan(
 
         container.addEventListener('wheel', handleWheel, { passive: false });
         return () => container.removeEventListener('wheel', handleWheel);
-    }, [containerRef, enableWheelZoom, minScale, maxScale]);
+    }, [containerRef, enableWheelZoom, minScale, maxScale, readRect]);
 
     /**
      * Steps the zoom. Both the scale and the transform are written synchronously: deferring

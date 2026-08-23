@@ -204,6 +204,34 @@ describe('getImageCoordinates', () => {
         const { result } = renderHook(() => useZoomPan(ref, CONTENT));
         expect(result.current[1].getImageCoordinates(0, 0)).toEqual({ x: 0, y: 0 });
     });
+
+    it('reads the container rect once across repeated calls', () => {
+        const rect = vi.spyOn(container, 'getBoundingClientRect');
+        const { result } = setup();
+        rect.mockClear();
+
+        for (let i = 0; i < 5; i++) result.current[1].getImageCoordinates(100, 100);
+
+        expect(rect).toHaveBeenCalledTimes(1);
+    });
+
+    it.each([
+        ['a scroll anywhere on the page', () => window.dispatchEvent(new Event('scroll'))],
+        ['a window resize', () => window.dispatchEvent(new Event('resize'))],
+        ['the pointer re-entering the container', () => container.dispatchEvent(new MouseEvent('mouseenter'))],
+    ])('re-reads the rect after %s', (_label, invalidate) => {
+        const rect = vi.spyOn(container, 'getBoundingClientRect');
+        const { result } = setup();
+        result.current[1].getImageCoordinates(100, 100);
+        rect.mockClear();
+
+        act(() => {
+            invalidate();
+        });
+        result.current[1].getImageCoordinates(100, 100);
+
+        expect(rect).toHaveBeenCalledTimes(1);
+    });
 });
 
 describe('keyboard state', () => {

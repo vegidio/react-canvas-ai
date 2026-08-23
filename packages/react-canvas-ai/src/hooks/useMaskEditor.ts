@@ -2,9 +2,10 @@ import React from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import type { HistoryState } from './useHistory';
-import { drawCursorCircle, paintMaskDot, recolorMask } from '../internal/canvas';
+import { paintMaskDot, recolorMask } from '../internal/canvas';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
+import { useBrushCursor, useBrushSizeWheel, useCursorPainter } from '../internal/useBrush';
 import { useCanvas2dContext } from '../internal/useCanvas2dContext';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 import { hexToRgb, toMask } from '../utils';
@@ -165,9 +166,6 @@ export const MaskEditorDefaults = {
 /** Painting with the secondary button or shift held erases back to the mask background. */
 const ERASE_COLOR = '#ffffff';
 
-/** The brush outline sits slightly above the mask opacity so it stays visible over it. */
-const CURSOR_OPACITY_BOOST = 0.1;
-
 /** How long the mask report waits for the stroke to settle. */
 const MASK_DEBOUNCE_MS = 300;
 
@@ -233,17 +231,15 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         maxHistorySize: MAX_HISTORY_SIZE,
     });
 
-    // Latest-value mirrors. The native listeners below read through these instead of closing
-    // over rendered values, which is what stops them being detached and re-attached on every
-    // render — `zoomPanState` and `zoomPanActions` in a dependency array did exactly that.
+    // Latest-value mirrors, for the handlers that must not be re-attached on every render.
+    // The brush hooks below do their own mirroring; these are the ones this hook reads
+    // directly.
     const isPanningRef = useLatest(zoomPanState.isPanning);
     const isSpaceKeyDownRef = useLatest(zoomPanState.isSpaceKeyDown);
     const getImageCoordinatesRef = useLatest(zoomPanActions.getImageCoordinates);
     const historyRef = useLatest(historyManager);
     const cursorSizeRef = useLatest(currentCursorSize);
     const maskColorRef = useLatest(maskColor);
-    const maskOpacityRef = useLatest(maskOpacity);
-    const sizeRef = useLatest(size);
     const onMaskChangeRef = useLatest(onMaskChange);
     const keyboardScopeRef = useLatest(keyboardScope);
 
@@ -350,60 +346,25 @@ export function useMaskEditor(props: UseMaskEditorProps): UseMaskEditorReturn {
         },
         [maskContext],
     );
-    const paintDabRef = useLatest(paintDab);
+    const paintCursor = useCursorPainter(cursorContext, { size, maskColor, maskOpacity });
 
-    const hasCursorSizeCallback = Boolean(onCursorSizeChange);
+    useBrushCursor(cursorCanvasRef, {
+        paintCursor,
+        getImageCoordinates: zoomPanActions.getImageCoordinates,
+        cursorSizeRef,
+        isPanning: zoomPanState.isPanning,
+        isSpaceKeyDown: zoomPanState.isSpaceKeyDown,
+        paintDab,
+    });
 
-    // Cursor tracking and freehand painting.
-    React.useEffect(() => {
-        const cursorCanvas = cursorCanvasRef.current;
-        if (!cursorCanvas) return;
-
-        const paintCursor = (x: number, y: number, radius: number) => {
-            if (!cursorContext) return;
-            drawCursorCircle(cursorContext, {
-                size: sizeRef.current,
-                x,
-                y,
-                radius,
-                color: maskColorRef.current,
-                opacity: maskOpacityRef.current + CURSOR_OPACITY_BOOST,
-            });
-        };
-
-        const handleMouseMove = (evt: MouseEvent) => {
-            if (!containerRef.current || isPanningRef.current) return;
-
-            const { x, y } = getImageCoordinatesRef.current(evt.clientX, evt.clientY);
-            paintCursor(x, y, cursorSizeRef.current);
-
-            if (evt.buttons > 0 && !isSpaceKeyDownRef.current) paintDabRef.current(x, y, evt);
-        };
-
-        const handleWheel = (evt: WheelEvent) => {
-            // Ctrl/meta is the zoom gesture; a plain wheel resizes the brush.
-            if (evt.ctrlKey || evt.metaKey || !cursorContext || !containerRef.current) return;
-
-            const { x, y } = getImageCoordinatesRef.current(evt.clientX, evt.clientY);
-            const newSize = Math.max(1, cursorSizeRef.current + (evt.deltaY > 0 ? -1 : 1));
-
-            cursorSizeRef.current = newSize;
-            setCursorSize(newSize);
-            notifyCursorSizeChange(newSize);
-            paintCursor(x, y, newSize);
-
-            evt.stopPropagation();
-            evt.preventDefault();
-        };
-
-        cursorCanvas.addEventListener('mousemove', handleMouseMove);
-        if (hasCursorSizeCallback) cursorCanvas.addEventListener('wheel', handleWheel, { passive: false });
-
-        return () => {
-            cursorCanvas.removeEventListener('mousemove', handleMouseMove);
-            if (hasCursorSizeCallback) cursorCanvas.removeEventListener('wheel', handleWheel);
-        };
-    }, [cursorContext, hasCursorSizeCallback, notifyCursorSizeChange]);
+    useBrushSizeWheel(cursorCanvasRef, {
+        enabled: Boolean(onCursorSizeChange),
+        paintCursor,
+        getImageCoordinates: zoomPanActions.getImageCoordinates,
+        cursorSizeRef,
+        setCursorSize,
+        onCursorSizeChange: notifyCursorSizeChange,
+    });
 
     const handleMouseDown = React.useCallback(
         (e: React.MouseEvent<HTMLCanvasElement>) => {

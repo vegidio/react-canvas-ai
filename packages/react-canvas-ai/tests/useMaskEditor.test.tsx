@@ -207,6 +207,61 @@ describe('cursor size', () => {
     });
 });
 
+describe('brush cursor', () => {
+    /** Spies on the drawing primitives of the mask and cursor layers of a mounted harness. */
+    const layers = (state: () => ReturnType<typeof useMaskEditor>) => {
+        const maskCtx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        const cursorCtx = state().cursorCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        return { mask: vi.spyOn(maskCtx, 'arc'), cursor: vi.spyOn(cursorCtx, 'arc') };
+    };
+
+    const move = (el: HTMLElement, init: MouseEventInit = {}) =>
+        act(() => {
+            el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, ...init }));
+        });
+
+    it('repaints the brush outline as the pointer moves, without painting the mask', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const arc = layers(state);
+
+        move(cursorCanvas());
+
+        expect(arc.cursor).toHaveBeenCalled();
+        expect(arc.mask).not.toHaveBeenCalled();
+    });
+
+    it('paints the mask while a button is held', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const arc = layers(state);
+
+        move(cursorCanvas(), { buttons: 1 });
+
+        expect(arc.mask).toHaveBeenCalled();
+    });
+
+    it('paints nothing while a pan is in progress', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+
+        // zoomIn rather than setScale: only zoomIn moves `transform.scale`, which is what
+        // actually gates the Space pan modifier.
+        act(() => {
+            state().zoomIn();
+        });
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        const arc = layers(state);
+
+        move(cursorCanvas(), { buttons: 1 });
+
+        // Space is held, so the stroke must not land even though a button is down.
+        expect(arc.mask).not.toHaveBeenCalled();
+    });
+});
+
 describe('drawing', () => {
     const mouse = (el: HTMLElement, type: 'mousedown' | 'mouseup', init: MouseEventInit = {}) =>
         act(() => {
