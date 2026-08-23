@@ -1,5 +1,27 @@
 import React from 'react';
 
+// While panning we take over the page cursor and disable text selection. The previous
+// values are saved so we can restore exactly what the host page had, rather than
+// clobbering it with a hardcoded default.
+let savedBodyCursor: string | null = null;
+let savedBodyUserSelect: string | null = null;
+
+const startBodyPanCursor = (): void => {
+  if (savedBodyCursor !== null) return;
+  savedBodyCursor = document.body.style.cursor;
+  savedBodyUserSelect = document.body.style.userSelect;
+  document.body.style.cursor = 'grabbing';
+  document.body.style.userSelect = 'none';
+};
+
+const stopBodyPanCursor = (): void => {
+  if (savedBodyCursor === null) return;
+  document.body.style.cursor = savedBodyCursor;
+  document.body.style.userSelect = savedBodyUserSelect ?? '';
+  savedBodyCursor = null;
+  savedBodyUserSelect = null;
+};
+
 export interface ZoomPanOptions {
   initialScale?: number;
   minScale?: number;
@@ -37,7 +59,7 @@ export interface ZoomPanActions {
 }
 
 export function useZoomPan(
-  containerRef: React.RefObject<HTMLDivElement>,
+  containerRef: React.RefObject<HTMLDivElement | null>,
   contentSize: { x: number; y: number },
   options: ZoomPanOptions = {},
 ): [ZoomPanState, ZoomPanActions] {
@@ -444,6 +466,8 @@ export function useZoomPan(
     setIsPanning(false);
     setIsSpaceKeyDown(false);
     setIsZoomKeyDown(false);
+    // Releasing focus mid-pan previously left the page stuck on `cursor: grabbing`.
+    stopBodyPanCursor();
   }, []);
 
   // Keyboard event listeners for space key and ctrl/cmd key
@@ -508,8 +532,7 @@ export function useZoomPan(
         setIsPanning(true);
         setLastMousePosition({ x: e.clientX, y: e.clientY });
 
-        // Add grabbing cursor class to document body
-        document.body.classList.add('panning-active');
+        startBodyPanCursor();
       }
     };
 
@@ -532,7 +555,7 @@ export function useZoomPan(
     const handleMouseUp = () => {
       if (isPanning) {
         setIsPanning(false);
-        document.body.classList.remove('panning-active');
+        stopBodyPanCursor();
       }
     };
 
@@ -540,7 +563,7 @@ export function useZoomPan(
     const handleMouseLeave = () => {
       if (isPanning) {
         setIsPanning(false);
-        document.body.classList.remove('panning-active');
+        stopBodyPanCursor();
       }
     };
 
@@ -554,6 +577,7 @@ export function useZoomPan(
       window.removeEventListener('mousemove', handleMouseMove);
       window.removeEventListener('mouseup', handleMouseUp);
       container.removeEventListener('mouseleave', handleMouseLeave);
+      stopBodyPanCursor();
     };
   }, [
     isPanning,

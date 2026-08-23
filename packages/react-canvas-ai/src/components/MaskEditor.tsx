@@ -1,7 +1,5 @@
 import React from 'react';
 
-import '../maskEditor.less';
-
 import { useMaskEditor } from '../hooks/useMaskEditor';
 
 import type { UseMaskEditorProps } from '../hooks/useMaskEditor';
@@ -10,12 +8,68 @@ import type { MaskEditorCanvasRef } from '../hooks/useMaskEditor';
 export type { MaskEditorCanvasRef };
 
 export interface MaskEditorProps extends UseMaskEditorProps {
-  canvasRef?: React.RefObject<MaskEditorCanvasRef>;
+  canvasRef?: React.Ref<MaskEditorCanvasRef>;
+  /** Appended to the root element's own class name. */
+  className?: string;
+  /** Merged over the root element's built-in layout styles. */
+  style?: React.CSSProperties;
 }
+
+// This component ships no stylesheet: every rule it needs is applied inline, so consumers
+// can `import { MaskEditor }` and be done. The class names below are kept purely as
+// styling hooks for consumers who want to reach in and override something.
+const outerStyle: React.CSSProperties = {
+  display: 'flex',
+  flexDirection: 'column',
+  justifyContent: 'flex-start',
+  alignItems: 'stretch',
+  position: 'relative',
+  overflow: 'hidden',
+  margin: '0 auto',
+  minHeight: 300,
+  width: '100%',
+  height: '100%',
+};
+
+const innerStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  position: 'relative',
+  overflow: 'hidden',
+  flex: '1 1 auto',
+  width: '100%',
+  height: '100%',
+};
+
+const containerStyle: React.CSSProperties = {
+  display: 'flex',
+  justifyContent: 'center',
+  alignItems: 'center',
+  position: 'relative',
+  boxSizing: 'border-box',
+  width: '100%',
+  height: '100%',
+  maxWidth: '100%',
+  maxHeight: '100%',
+  minHeight: 200,
+  overflow: 'hidden',
+};
+
+// The three canvases are stacked absolutely on top of each other. Without these the
+// layers collapse into normal flow and the editor renders as three stacked images.
+const layerStyle: React.CSSProperties = {
+  position: 'absolute',
+  top: 0,
+  left: 0,
+  display: 'block',
+};
 
 export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
   const {
     canvasRef: externalMaskCanvasRef,
+    className,
+    style,
     ...hookProps
   } = props;
 
@@ -32,7 +86,6 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
     redo,
     size,
     undo,
-    scale,
     transform,
     containerRef,
     resetZoom,
@@ -48,7 +101,9 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
   React.useImperativeHandle(
     externalMaskCanvasRef,
     () => ({
-      maskCanvas: maskCanvasRef.current,
+      get maskCanvas() {
+        return maskCanvasRef.current;
+      },
       undo,
       redo,
       clear,
@@ -60,17 +115,22 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
     [maskCanvasRef, undo, redo, clear, resetZoom, setPan, zoomIn, zoomOut],
   );
 
-  const transformStyle = React.useMemo(() => {
+  const canvasLayerStyle = React.useMemo<React.CSSProperties>(() => {
     return {
-      position: 'absolute' as const,
+      position: 'absolute',
       top: '50%',
       left: '50%',
       transform: `translate(-50%, -50%) scale(${effectiveScale}) translate(${transform.translateX}px, ${transform.translateY}px)`,
       transformOrigin: 'center',
       transition: isPanning ? 'none' : 'transform 0.15s ease-out',
-      width: size.x + 'px',
-      height: size.y + 'px',
+      width: size.x,
+      height: size.y,
       display: 'block',
+      // Keep the layer on its own compositor surface so panning does not repaint.
+      willChange: 'transform',
+      touchAction: 'none',
+      transformStyle: 'preserve-3d',
+      backfaceVisibility: 'hidden',
     };
   }, [transform, effectiveScale, isPanning, size]);
 
@@ -78,13 +138,12 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
   const containerCursorStyle = React.useMemo(() => {
     if (isPanning) {
       return 'grabbing';
-    } else if (isZoomKeyDown) {
+    }
+    if (isZoomKeyDown) {
       return 'zoom-in';
-    } else if (scale > 1 && isPanning) {
-      return 'grab';
     }
     return 'default';
-  }, [isPanning, scale, isZoomKeyDown]);
+  }, [isPanning, isZoomKeyDown]);
 
   const handleKeyDown = React.useCallback((e: React.KeyboardEvent) => {
     if (e.code === 'Space') {
@@ -100,57 +159,33 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
 
   return (
     <div
-      className="react-mask-editor-outer"
+      className={
+        className
+          ? `react-mask-editor-outer ${className}`
+          : 'react-mask-editor-outer'
+      }
       data-mask-editor-id={uniqueId}
       style={{
+        ...outerStyle,
         maxWidth: props.maxWidth ? `${props.maxWidth}px` : undefined,
         maxHeight: props.maxHeight ? `${props.maxHeight}px` : undefined,
-        minHeight: '300px',
-        width: '100%',
-        height: '100%',
+        ...style,
       }}
+      role="application"
       tabIndex={0}
       onKeyDown={handleKeyDown}
     >
       <div
         className="react-mask-editor-inner"
         ref={containerRef}
-        style={{
-          width: '100%',
-          height: '100%',
-          overflow: 'hidden',
-          position: 'relative',
-          display: 'flex',
-          justifyContent: 'center',
-          alignItems: 'center',
-        }}
+        style={innerStyle}
       >
-        <div
-          className="canvas-container"
-          style={{
-            position: 'relative',
-            maxWidth: '100%',
-            maxHeight: '100%',
-            width: '100%',
-            height: '100%',
-            minHeight: '200px',
-            overflow: 'hidden',
-          }}
-        >
-          <div
-            className="all-canvases"
-            style={{
-              ...transformStyle,
-            }}
-          >
+        <div className="canvas-container" style={containerStyle}>
+          <div className="all-canvases" style={canvasLayerStyle}>
             <canvas
               key={key}
               ref={canvasRef}
-              style={{
-                width: size.x,
-                height: size.y,
-                display: 'block', // Ensure proper display
-              }}
+              style={{ ...layerStyle, width: size.x, height: size.y, zIndex: 1 }}
               width={size.x}
               height={size.y}
               className="react-mask-editor-base-canvas"
@@ -160,14 +195,13 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
               width={size.x}
               height={size.y}
               style={{
+                ...layerStyle,
                 width: size.x,
                 height: size.y,
                 opacity: maskOpacity,
-                mixBlendMode: maskBlendMode as any,
-                position: 'absolute',
-                top: 0,
-                left: 0,
+                mixBlendMode: maskBlendMode,
                 pointerEvents: 'none',
+                zIndex: 2,
               }}
               className="react-mask-editor-mask-canvas"
             />
@@ -178,13 +212,11 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
               onMouseUp={handleMouseUp}
               onMouseDown={handleMouseDown}
               style={{
+                ...layerStyle,
                 width: size.x,
                 height: size.y,
                 cursor: containerCursorStyle,
-                position: 'absolute',
-                top: 0,
-                left: 0,
-                zIndex: 200, // Ensure cursor layer is on top
+                zIndex: 3,
               }}
               className="react-mask-editor-cursor-canvas"
             />
