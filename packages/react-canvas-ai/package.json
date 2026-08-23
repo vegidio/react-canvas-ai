@@ -1,0 +1,85 @@
+{
+    "name": "react-canvas-ai",
+    "version": "26.8.0",
+    "description": "General-purpose mask editor for React image manipulation apps",
+    "license": "Apache-2.0",
+    "author": "Vinicius Egidio <vegidio@gmail.com> (https://vinicius.io)",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/vegidio/react-canvas-ai.git",
+        "directory": "packages/react-canvas-ai"
+    },
+    "homepage": "https://github.com/vegidio/react-canvas-ai#readme",
+    "keywords": [
+        "canvas",
+        "react",
+        "react-component",
+        "reactjs",
+        "drawing",
+        "mask",
+        "editor",
+        "image",
+        "manipulation",
+        "inpainting",
+        "ai"
+    ],
+    "type": "module",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "exports": {
+        ".": {
+            "import": {
+                "types": "./dist/index.d.ts",
+                "default": "./dist/index.js"
+            },
+            "require": {
+                "types": "./dist/index.d.cts",
+                "default": "./dist/index.cjs"
+            }
+        },
+        "./package.json": "./package.json"
+    },
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE"
+    ],
+    "sideEffects": false,
+    "publishConfig": {
+        "access": "public"
+    },
+    "scripts": {
+        "build": "tsdown",
+        "dev": "tsdown --watch",
+        "test": "vitest run",
+        "test:watch": "vitest",
+        "test:coverage": "vitest run --coverage",
+        "typecheck": "tsc --noEmit",
+        "clean": "rm -rf dist",
+        "prepack": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE",
+        "postpack": "rm -f ./README.md ./LICENSE"
+    },
+    "peerDependencies": {
+        "react": ">=18.0.0 <20.0.0",
+        "react-dom": ">=18.0.0 <20.0.0"
+    },
+    "devDependencies": {
+        "@arethetypeswrong/cli": "^0.18.5",
+        "@testing-library/dom": "^10.4.1",
+        "@testing-library/jest-dom": "^7.0.1",
+        "@testing-library/react": "^16.3.2",
+        "@testing-library/user-event": "^14.6.6",
+        "@types/react": "^19.2.18",
+        "@types/react-dom": "^19.2.4",
+        "@vitest/coverage-v8": "^4.1.11",
+        "jsdom": "^30.0.1",
+        "publint": "^0.3.24",
+        "react": "^19.2.8",
+        "react-dom": "^19.2.8",
+        "tsdown": "^0.22.14",
+        "typescript": "^7.0.2",
+        "vitest": "^4.1.11",
+        "vitest-canvas-mock": "^1.1.5"
+    }
+}

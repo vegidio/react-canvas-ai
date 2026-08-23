@@ -1,0 +1,10 @@
+packages:
+  - 'packages/*'
+  - 'playground'
+
+autoInstallPeers: true
+strictPeerDependencies: false
+preferWorkspacePackages: true
+
+allowBuilds:
+  simple-git-hooks: true

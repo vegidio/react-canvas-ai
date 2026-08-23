@@ -1,8 +1,31 @@
-node_modules
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build outputs
+dist/
+build/
+*.tsbuildinfo
+
+# Test outputs
+coverage/
+
+# Logs
 *.log
-*~
+npm-debug.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.swp
+
+# OS
 .DS_Store
-storybook-static/
+Thumbs.db
+
+# Env
 .env
-stats.json
-.npmrc
+.env.local
+.env.*.local
