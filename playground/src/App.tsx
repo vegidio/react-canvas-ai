@@ -1,12 +1,10 @@
 import * as React from 'react';
-import { MaskEditor, type MaskEditorCanvasRef, toMask } from 'react-canvas-masker';
-// import { MaskEditor, toMask, type MaskEditorCanvasRef } from '../../src/index';
-import 'react-canvas-masker/dist/style.css';
+import { MaskEditor, type MaskEditorCanvasRef, toMask } from 'react-canvas-ai';
 // import './App.css';
 import MaskEditorProviderExample from './MaskEditorProviderExample';
 
 function App() {
-    const canvas = React.useRef<MaskEditorCanvasRef>(null) as React.RefObject<MaskEditorCanvasRef>;
+    const canvas = React.useRef<MaskEditorCanvasRef>(null);
     const [mask, setMask] = React.useState('');
     const [size, setSize] = React.useState(20);
     const [color, setColor] = React.useState('#c3c3c3');

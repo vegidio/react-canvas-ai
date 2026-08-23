@@ -1,4 +1,13 @@
 {
-    "files": [],
-    "references": [{ "path": "./tsconfig.app.json" }, { "path": "./tsconfig.node.json" }]
+    "extends": "../tsconfig.base.json",
+    "compilerOptions": {
+        // The playground is an app: it never emits declarations, so the constraints that
+        // let oxc generate .d.ts for the library would only add noise here.
+        "isolatedDeclarations": false,
+        "declaration": false,
+        "noUnusedLocals": true,
+        "noUnusedParameters": true,
+        "noUncheckedIndexedAccess": false
+    },
+    "include": ["src", "vite.config.ts"]
 }

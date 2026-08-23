@@ -1,4 +1,4 @@
-import { MaskEditorProvider, useMaskEditorContext } from '../../src';
+import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
 import cat from './assets/images/cat.jpg';
 
 // Canvas and controls as separate components using the context
