@@ -163,16 +163,24 @@ const MyComponent = () => {
 
 The `MaskEditor` component exposes useful methods via `ref`:
 
-| Name           | Type                             | Description                                                    |
-| -------------- | -------------------------------- | -------------------------------------------------------------- |
-| `maskCanvas?`  | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. |
-| `undo()`       | `() => void`                     | Undo the last mask change.                                     |
-| `redo()`       | `() => void`                     | Redo the last undone mask change.                              |
-| `clear()`      | `() => void`                     | Clear the mask.                                                |
-| `resetZoom()`  | `() => void`                     | Reset zoom to initial scale and center the image.              |
-| `setPan()`     | `(x: number, y: number) => void` | Set the pan position manually.                                 |
-| `zoomIn()`     | `() => void`                     | Zoom in by one step (0.2 scale increment).                     |
-| `zoomOut()`    | `() => void`                     | Zoom out by one step (0.2 scale decrement).                    |
+| Name            | Type                             | Description                                                    |
+| --------------- | -------------------------------- | -------------------------------------------------------------- |
+| `maskCanvas?`   | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. |
+| `maskColor`     | `string`                         | The colour strokes are currently painted with.                 |
+| `maskOpacity`   | `number`                         | The mask layer's current opacity.                              |
+| `maskBlendMode` | `MaskBlendMode`                  | The mask layer's current `mix-blend-mode`.                     |
+| `cursorSize`    | `number`                         | The current brush diameter, wheel-driven changes included.     |
+| `undo()`        | `() => void`                     | Undo the last mask change.                                     |
+| `redo()`        | `() => void`                     | Redo the last undone mask change.                              |
+| `clear()`       | `() => void`                     | Clear the mask.                                                |
+| `resetZoom()`   | `() => void`                     | Reset zoom to initial scale and center the image.              |
+| `setPan()`      | `(x: number, y: number) => void` | Set the pan position manually.                                 |
+| `zoomIn()`      | `() => void`                     | Zoom in by one step (0.2 scale increment).                     |
+| `zoomOut()`     | `() => void`                     | Zoom out by one step (0.2 scale decrement).                    |
+
+The four style members are live reads of what the editor is painting with right now, so a peer
+component or plugin that draws into `maskCanvas` itself can match hand-painted strokes without
+being handed the same style props a second time.
 
 ---
 

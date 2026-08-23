@@ -180,10 +180,26 @@ export type UseMaskEditorReturn = {
  *
  * Derived from the hook's return rather than restated, so adding a method is one edit
  * instead of three that have to agree.
+ *
+ * `maskColor`, `maskOpacity`, `maskBlendMode` and `cursorSize` are live reads of the style
+ * the editor is currently painting with, including changes the editor makes to itself (the
+ * brush size responds to the wheel). They are here for peer components that paint into
+ * `maskCanvas` directly — without them such a plugin can only match the editor's look by
+ * having the consumer pass the same style props a second time.
  */
 export type MaskEditorCanvasRef = Pick<
     UseMaskEditorReturn,
-    'undo' | 'redo' | 'clear' | 'resetZoom' | 'setPan' | 'zoomIn' | 'zoomOut'
+    | 'undo'
+    | 'redo'
+    | 'clear'
+    | 'resetZoom'
+    | 'setPan'
+    | 'zoomIn'
+    | 'zoomOut'
+    | 'maskColor'
+    | 'maskOpacity'
+    | 'maskBlendMode'
+    | 'cursorSize'
 > & {
     maskCanvas?: HTMLCanvasElement;
 };

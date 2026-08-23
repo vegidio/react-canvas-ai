@@ -3,6 +3,7 @@ import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
 import { MaskEditor } from '../src/components/MaskEditor';
+import { MaskEditorDefaults } from '../src/internal/defaults';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC } from './helpers/image';
 
@@ -138,6 +139,55 @@ describe('imperative ref', () => {
         for (const method of ['undo', 'redo', 'clear', 'resetZoom', 'setPan', 'zoomIn', 'zoomOut'] as const) {
             expect(typeof ref.current?.[method]).toBe('function');
         }
+    });
+
+    // Peer components that paint into `maskCanvas` themselves need the editor's current
+    // painting style to match it; before this they had to be handed the same props twice.
+    it('reports the active style, defaulting to MaskEditorDefaults', () => {
+        const ref = createRef<MaskEditorCanvasRef>();
+        renderEditor({ canvasRef: ref });
+
+        expect(ref.current?.maskColor).toBe(MaskEditorDefaults.maskColor);
+        expect(ref.current?.maskOpacity).toBe(MaskEditorDefaults.maskOpacity);
+        expect(ref.current?.maskBlendMode).toBe(MaskEditorDefaults.maskBlendMode);
+        expect(ref.current?.cursorSize).toBe(MaskEditorDefaults.cursorSize);
+    });
+
+    it('tracks style prop changes without remounting', () => {
+        const ref = createRef<MaskEditorCanvasRef>();
+        const { rerender } = renderEditor({ canvasRef: ref });
+
+        rerender(
+            <MaskEditor
+                src={SRC}
+                onDrawingChange={vi.fn()}
+                canvasRef={ref}
+                maskColor='#ff0000'
+                maskOpacity={0.9}
+                maskBlendMode='multiply'
+                cursorSize={42}
+            />,
+        );
+
+        expect(ref.current?.maskColor).toBe('#ff0000');
+        expect(ref.current?.maskOpacity).toBe(0.9);
+        expect(ref.current?.maskBlendMode).toBe('multiply');
+        expect(ref.current?.cursorSize).toBe(42);
+    });
+
+    // The style members are getters over a mirror rather than values baked into the handle's
+    // dependency array, so a style change must not hand the consumer a fresh object — the
+    // brush size alone changes on every wheel tick.
+    it('keeps the handle identity stable across style changes', () => {
+        const ref = createRef<MaskEditorCanvasRef>();
+        const { rerender } = renderEditor({ canvasRef: ref });
+        const handle = ref.current;
+
+        rerender(<MaskEditor src={SRC} onDrawingChange={vi.fn()} canvasRef={ref} maskColor='#00ff00' cursorSize={7} />);
+
+        expect(ref.current).toBe(handle);
+        expect(ref.current?.maskColor).toBe('#00ff00');
+        expect(ref.current?.cursorSize).toBe(7);
     });
 
     it('resolves maskCanvas to the live mask element', () => {

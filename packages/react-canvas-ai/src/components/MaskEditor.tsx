@@ -2,6 +2,7 @@ import type { CSSProperties, FC, Ref } from 'react';
 import { useId, useImperativeHandle, useMemo } from 'react';
 import type { MaskEditorCanvasRef, UseMaskEditorProps } from '../hooks/useMaskEditor';
 import { useMaskEditor } from '../hooks/useMaskEditor';
+import { useLatest } from '../internal/useLatest';
 import { maskEditorLayerStyles } from './MaskEditorLayers';
 
 export type { MaskEditorCanvasRef };
@@ -62,11 +63,13 @@ export const MaskEditor: FC<MaskEditorProps> = (props) => {
         canvasRef,
         clear,
         cursorCanvasRef,
+        cursorSize,
         handleMouseDown,
         handleMouseUp,
         key,
         maskBlendMode,
         maskCanvasRef,
+        maskColor,
         maskOpacity,
         redo,
         size,
@@ -82,12 +85,30 @@ export const MaskEditor: FC<MaskEditorProps> = (props) => {
         zoomOut,
     } = useMaskEditor(hookProps);
 
+    // Mirrored so the style getters below can stay live without listing these values as
+    // dependencies of the handle: `cursorSize` changes on every wheel tick while the user
+    // resizes the brush, and rebuilding `ref.current` that often would break any consumer
+    // holding on to the object it was handed.
+    const styleRef = useLatest({ maskColor, maskOpacity, maskBlendMode, cursorSize });
+
     // Expose API via ref if provided
     useImperativeHandle(
         externalMaskCanvasRef,
         () => ({
             get maskCanvas() {
                 return maskCanvasRef.current ?? undefined;
+            },
+            get maskColor() {
+                return styleRef.current.maskColor;
+            },
+            get maskOpacity() {
+                return styleRef.current.maskOpacity;
+            },
+            get maskBlendMode() {
+                return styleRef.current.maskBlendMode;
+            },
+            get cursorSize() {
+                return styleRef.current.cursorSize;
             },
             undo,
             redo,
