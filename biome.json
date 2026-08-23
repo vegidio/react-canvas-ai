@@ -1,0 +1,94 @@
+{
+    "root": true,
+    "$schema": "https://biomejs.dev/schemas/2.5.10/schema.json",
+    "vcs": {
+        "enabled": false,
+        "clientKind": "git",
+        "useIgnoreFile": false
+    },
+    "files": {
+        "ignoreUnknown": false,
+        "includes": [
+            "**",
+            "!**/dist",
+            "!**/coverage",
+            "!**/node_modules",
+            "!pnpm-lock.yaml"
+        ]
+    },
+    "formatter": {
+        "enabled": true,
+        "indentStyle": "space",
+        "indentWidth": 4,
+        "lineWidth": 120
+    },
+    "linter": {
+        "enabled": true,
+        "rules": {
+            "a11y": {
+                "useAltText": "off"
+            },
+            "complexity": {
+                "noForEach": "off"
+            },
+            "correctness": {
+                "noUnusedImports": "warn",
+                "useUniqueElementIds": "off",
+                "useExhaustiveDependencies": "warn"
+            },
+            "suspicious": {
+                "noArrayIndexKey": "off"
+            },
+            "style": {
+                "noJsxLiterals": "error"
+            },
+            "preset": "recommended"
+        }
+    },
+    "javascript": {
+        "formatter": {
+            "quoteStyle": "single",
+            "jsxQuoteStyle": "single"
+        }
+    },
+    "assist": {
+        "enabled": true,
+        "actions": {
+            "source": {
+                "organizeImports": {
+                    "level": "on",
+                    "options": {
+                        "groups": [
+                            ["react", "react/**", "react-dom", "react-dom/**"],
+                            ":PACKAGE:",
+                            { "type": true },
+                            ":PATH:"
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    "overrides": [
+        {
+            "includes": ["playground/**"],
+            "linter": {
+                "rules": {
+                    "style": {
+                        "noJsxLiterals": "off"
+                    }
+                }
+            }
+        },
+        {
+            "includes": ["packages/*/tests/**"],
+            "linter": {
+                "rules": {
+                    "suspicious": {
+                        "noExplicitAny": "off"
+                    }
+                }
+            }
+        }
+    ]
+}
