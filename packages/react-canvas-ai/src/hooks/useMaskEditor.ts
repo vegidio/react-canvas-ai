@@ -2,8 +2,29 @@ import React from 'react';
 
 import { hexToRgb, toMask, simpleDebounce } from '../utils';
 
-import { useHistory, HistoryState } from './useHistory';
+import { useHistory } from './useHistory';
+
+import type { HistoryState } from './useHistory';
 import { useZoomPan } from './useZoomPan';
+
+/** The CSS `mix-blend-mode` values the mask layer supports. */
+export type MaskBlendMode =
+  | 'normal'
+  | 'multiply'
+  | 'screen'
+  | 'overlay'
+  | 'darken'
+  | 'lighten'
+  | 'color-dodge'
+  | 'color-burn'
+  | 'hard-light'
+  | 'soft-light'
+  | 'difference'
+  | 'exclusion'
+  | 'hue'
+  | 'saturation'
+  | 'color'
+  | 'luminosity';
 
 export interface UseMaskEditorProps {
   src: string;
@@ -24,23 +45,7 @@ export interface UseMaskEditorProps {
   onCursorSizeChange?: (size: number) => void;
   maskOpacity?: number;
   maskColor?: string;
-  maskBlendMode?:
-    | 'normal'
-    | 'multiply'
-    | 'screen'
-    | 'overlay'
-    | 'darken'
-    | 'lighten'
-    | 'color-dodge'
-    | 'color-burn'
-    | 'hard-light'
-    | 'soft-light'
-    | 'difference'
-    | 'exclusion'
-    | 'hue'
-    | 'saturation'
-    | 'color'
-    | 'luminosity';
+  maskBlendMode?: MaskBlendMode;
   onDrawingChange: (isDrawing: boolean) => void;
   onUndoRequest?: () => void;
   onRedoRequest?: () => void;
@@ -97,9 +102,9 @@ export interface MaskEditorCanvasRef {
 }
 
 export interface UseMaskEditorReturn {
-  canvasRef: React.RefObject<HTMLCanvasElement>;
+  canvasRef: React.RefObject<HTMLCanvasElement | null>;
   clear: () => void;
-  cursorCanvasRef: React.RefObject<HTMLCanvasElement>;
+  cursorCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   cursorSize: number;
   handleMouseDown: (e: React.MouseEvent<HTMLCanvasElement>) => void;
   handleMouseUp: (e: React.MouseEvent<HTMLCanvasElement>) => void;
@@ -107,8 +112,8 @@ export interface UseMaskEditorReturn {
   historyIndex: number;
   isDrawing: boolean;
   key: number;
-  maskBlendMode: string;
-  maskCanvasRef: React.RefObject<HTMLCanvasElement>;
+  maskBlendMode: MaskBlendMode;
+  maskCanvasRef: React.RefObject<HTMLCanvasElement | null>;
   maskColor: string;
   maskOpacity: number;
   redo: () => void;
@@ -122,7 +127,7 @@ export interface UseMaskEditorReturn {
     translateX: number;
     translateY: number;
   };
-  containerRef: React.RefObject<HTMLDivElement>;
+  containerRef: React.RefObject<HTMLDivElement | null>;
   resetZoom: () => void;
   isPanning: boolean;
   isZoomKeyDown: boolean;
@@ -136,7 +141,7 @@ export const MaskEditorDefaults = {
   cursorSize: 10,
   maskOpacity: 0.4,
   maskColor: '#ffffff',
-  maskBlendMode: 'normal',
+  maskBlendMode: 'normal' as MaskBlendMode,
   scale: 1,
   minScale: 0.8,
   maxScale: 4,

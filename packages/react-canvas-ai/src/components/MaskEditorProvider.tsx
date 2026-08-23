@@ -1,7 +1,8 @@
 import React from 'react';
 
-import {
-  useMaskEditor,
+import { useMaskEditor } from '../hooks/useMaskEditor';
+
+import type {
   UseMaskEditorProps,
   UseMaskEditorReturn,
 } from '../hooks/useMaskEditor';

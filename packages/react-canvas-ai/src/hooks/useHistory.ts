@@ -5,6 +5,16 @@ export interface HistoryState {
   timestamp: number;
 }
 
+export interface UseHistoryReturn {
+  history: HistoryState[];
+  historyIndex: number;
+  saveToHistory: () => void;
+  restoreFromHistory: (index: number) => void;
+  undo: () => void;
+  redo: () => void;
+  clear: () => void;
+}
+
 interface UseHistoryOptions {
   onUndoRequest?: () => void;
   onRedoRequest?: () => void;
@@ -15,7 +25,7 @@ export function useHistory(
   context: CanvasRenderingContext2D | null,
   size: { x: number; y: number },
   options: UseHistoryOptions = {},
-) {
+): UseHistoryReturn {
   const { onUndoRequest, onRedoRequest, maxHistorySize = 50 } = options;
 
   const [history, setHistory] = React.useState<HistoryState[]>([]);
