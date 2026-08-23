@@ -36,10 +36,29 @@ export const toMask = (canvas: HTMLCanvasElement): string => {
     return dataUrl;
 };
 
-export const hexToRgb = (color: string): number[] => {
-    const parts = color.replace('#', '').match(/.{1,2}/g);
-    if (!parts) return [0, 0, 0];
-    return parts.map((part) => Number.parseInt(part, 16));
+/** An `[r, g, b]` triple, each channel 0-255. */
+export type Rgb = [number, number, number];
+
+const BLACK: Rgb = [0, 0, 0];
+
+/**
+ * Parses a CSS hex colour, accepting both `#rgb` shorthand and full `#rrggbb`, with or
+ * without the leading hash. Anything else falls back to black rather than propagating
+ * `NaN` channels into `putImageData`.
+ */
+export const hexToRgb = (color: string): Rgb => {
+    const hex = color.replace('#', '').toLowerCase();
+    if (!/^[0-9a-f]+$/.test(hex)) return [...BLACK];
+
+    // Shorthand expands per nibble: `#0a0` is `#00aa00`, not `#0a0` truncated.
+    const full = hex.length === 3 ? [...hex].map((nibble) => nibble + nibble).join('') : hex;
+    if (full.length !== 6) return [...BLACK];
+
+    return [
+        Number.parseInt(full.slice(0, 2), 16),
+        Number.parseInt(full.slice(2, 4), 16),
+        Number.parseInt(full.slice(4, 6), 16),
+    ];
 };
 
 export function simpleDebounce<T extends (...args: never[]) => void>(fn: T, wait: number): T & { cancel: () => void } {

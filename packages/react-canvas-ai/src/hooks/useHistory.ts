@@ -21,6 +21,14 @@ interface UseHistoryOptions {
     maxHistorySize?: number;
 }
 
+/** The entries and the cursor into them move together, so they are one value. */
+interface HistoryStack {
+    entries: HistoryState[];
+    index: number;
+}
+
+const EMPTY: HistoryStack = { entries: [], index: -1 };
+
 export function useHistory(
     context: CanvasRenderingContext2D | null,
     size: { x: number; y: number },
@@ -28,89 +36,94 @@ export function useHistory(
 ): UseHistoryReturn {
     const { onUndoRequest, onRedoRequest, maxHistorySize = 50 } = options;
 
-    const [history, setHistory] = React.useState<HistoryState[]>([]);
-    const [historyIndex, setHistoryIndex] = React.useState(-1);
+    const [stack, setStack] = React.useState<HistoryStack>(EMPTY);
 
-    // Save current state to history
+    // Mirrored eagerly so two saves in the same tick see each other. Holding the entries and
+    // the index in separate state, and reading the index from the closure inside a
+    // `setHistory` updater, used to let the two drift apart and silently corrupt undo —
+    // reachable from a fast double stroke, or a stroke landing alongside an initial mask.
+    const stackRef = React.useRef(stack);
+
+    const commit = React.useCallback((next: HistoryStack) => {
+        stackRef.current = next;
+        setStack(next);
+    }, []);
+
     const saveToHistory = React.useCallback(() => {
         if (!context || size.x === 0 || size.y === 0) return;
 
+        let imageData: ImageData;
         try {
-            const imageData = context.getImageData(0, 0, size.x, size.y);
-            const newState: HistoryState = {
-                imageData,
-                timestamp: Date.now(),
-            };
-
-            setHistory((prev) => {
-                // Remove any "future" states if we're in the middle of the history
-                const newHistory = prev.slice(0, historyIndex + 1);
-                newHistory.push(newState);
-
-                // Limit history size
-                return newHistory.slice(-maxHistorySize);
-            });
-
-            setHistoryIndex((prev) => Math.min(prev + 1, maxHistorySize - 1));
+            // Read outside the updater: it is a side effect, and StrictMode invokes updaters twice.
+            imageData = context.getImageData(0, 0, size.x, size.y);
         } catch (error) {
-            // Avoid crash if canvas is not ready
+            // Avoid crash if the canvas is tainted or not ready.
             console.warn('Failed to save history state:', error);
+            return;
         }
-    }, [context, size, historyIndex, maxHistorySize]);
 
-    // Restore from history at specified index
+        const previous = stackRef.current;
+        // Drop any redo branch we are about to diverge from.
+        const entries = previous.entries.slice(0, previous.index + 1);
+        entries.push({ imageData, timestamp: Date.now() });
+
+        const capped = entries.slice(-maxHistorySize);
+        commit({ entries: capped, index: capped.length - 1 });
+    }, [context, size, maxHistorySize, commit]);
+
     const restoreFromHistory = React.useCallback(
         (index: number) => {
             if (!context || size.x === 0 || size.y === 0) return;
 
-            if (index < -1 || index >= history.length) return;
+            const { entries } = stackRef.current;
+            if (index < -1 || index >= entries.length) return;
 
             if (index === -1) {
-                // Special case: clear canvas
+                // Stepping back past the first entry means an empty canvas.
                 context.clearRect(0, 0, size.x, size.y);
-                setHistoryIndex(-1);
+                commit({ entries, index: -1 });
                 return;
             }
 
-            if (history[index]) {
-                context.putImageData(history[index].imageData, 0, 0);
-                setHistoryIndex(index);
-            }
+            const entry = entries[index];
+            if (!entry) return;
+
+            context.putImageData(entry.imageData, 0, 0);
+            commit({ entries, index });
         },
-        [history, context, size],
+        [context, size, commit],
     );
 
-    // Undo action
     const undo = React.useCallback(() => {
-        restoreFromHistory(historyIndex - 1);
+        restoreFromHistory(stackRef.current.index - 1);
         onUndoRequest?.();
-    }, [restoreFromHistory, historyIndex, onUndoRequest]);
+    }, [restoreFromHistory, onUndoRequest]);
 
-    // Redo action
     const redo = React.useCallback(() => {
-        if (history[historyIndex + 1]) {
-            restoreFromHistory(historyIndex + 1);
-            onRedoRequest?.();
-        }
-    }, [restoreFromHistory, history, historyIndex, onRedoRequest]);
+        const next = stackRef.current.index + 1;
+        if (!stackRef.current.entries[next]) return;
 
-    // Clear all history
+        restoreFromHistory(next);
+        onRedoRequest?.();
+    }, [restoreFromHistory, onRedoRequest]);
+
     const clear = React.useCallback(() => {
         if (!context || size.x === 0 || size.y === 0) return;
 
         context.clearRect(0, 0, size.x, size.y);
-        setHistory([]);
-        setHistoryIndex(-1);
-    }, [context, size]);
+        commit({ entries: [], index: -1 });
+    }, [context, size, commit]);
 
-    // Return the history management functions and state
-    return {
-        history,
-        historyIndex,
-        saveToHistory,
-        restoreFromHistory,
-        undo,
-        redo,
-        clear,
-    };
+    return React.useMemo(
+        () => ({
+            history: stack.entries,
+            historyIndex: stack.index,
+            saveToHistory,
+            restoreFromHistory,
+            undo,
+            redo,
+            clear,
+        }),
+        [stack, saveToHistory, restoreFromHistory, undo, redo, clear],
+    );
 }

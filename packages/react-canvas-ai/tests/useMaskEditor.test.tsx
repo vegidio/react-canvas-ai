@@ -1,4 +1,4 @@
-import { act, render, renderHook } from '@testing-library/react';
+import { act, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UseMaskEditorProps } from '../src/hooks/useMaskEditor';
 import { useMaskEditor } from '../src/hooks/useMaskEditor';
@@ -130,7 +130,11 @@ describe('remote sources', () => {
         setup({ src: 'https://example.com/cat.png' });
         await settle();
 
-        expect(fetchMock).toHaveBeenCalledWith('https://example.com/cat.png');
+        // The signal is what lets a superseded load be cancelled mid-flight.
+        expect(fetchMock).toHaveBeenCalledWith(
+            'https://example.com/cat.png',
+            expect.objectContaining({ signal: expect.anything() }),
+        );
         vi.unstubAllGlobals();
     });
 
@@ -410,5 +414,63 @@ describe('unmount safety', () => {
         });
 
         expect(onMaskChange).not.toHaveBeenCalled();
+    });
+});
+
+describe('mask colour', () => {
+    it('recolours existing strokes when the colour changes', async () => {
+        const putImageData = vi.spyOn(CanvasRenderingContext2D.prototype, 'putImageData');
+
+        const Harness = ({ maskColor }: { maskColor: string }) => {
+            const state = useMaskEditor({ src: SRC, maskColor, onDrawingChange: vi.fn() });
+            return (
+                <div ref={state.containerRef}>
+                    <canvas ref={state.canvasRef} />
+                    <canvas ref={state.maskCanvasRef} />
+                    <canvas ref={state.cursorCanvasRef} />
+                </div>
+            );
+        };
+
+        const { rerender } = render(<Harness maskColor='#ff0000' />);
+        await settle();
+
+        putImageData.mockClear();
+        rerender(<Harness maskColor='#00ff00' />);
+        await settle();
+
+        expect(putImageData).toHaveBeenCalled();
+    });
+});
+
+describe('changing src', () => {
+    it('keeps the newest image when two loads overlap', async () => {
+        restoreImage();
+        // The superseded load resolves *after* the one that replaced it.
+        restoreImage = mockImageLoad((src) =>
+            src.includes('big') ? { width: 2480, height: 1240, delay: 100 } : { width: 400, height: 400 },
+        );
+
+        const Harness = ({ src }: { src: string }) => {
+            const state = useMaskEditor({ src, onDrawingChange: vi.fn() });
+            sizes.push(state.size);
+            return (
+                <div ref={state.containerRef}>
+                    <canvas ref={state.canvasRef} />
+                    <canvas ref={state.maskCanvasRef} />
+                    <canvas ref={state.cursorCanvasRef} />
+                </div>
+            );
+        };
+        const sizes: { x: number; y: number }[] = [];
+
+        const { rerender } = render(<Harness src='big.png' />);
+        // Swap before the first load can settle.
+        rerender(<Harness src='small.png' />);
+        await settle();
+
+        // Regression guard: the load effect used to have an empty cleanup, so the superseded
+        // image could resolve last and win.
+        expect(sizes[sizes.length - 1]).toEqual({ x: 400, y: 400 });
     });
 });

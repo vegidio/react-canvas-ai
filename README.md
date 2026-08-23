@@ -151,6 +151,7 @@ const MyComponent = () => {
 | `enableWheelZoom` | `boolean` | No | `true` | Allow `Ctrl`/`Cmd` + wheel to zoom. |
 | `onPanChange` | `(x: number, y: number) => void` | No | — | Called when the pan position changes. |
 | `constrainPan` | `boolean` | No | `true` | Keep the image within view while panning. |
+| `keyboardScope` | `'window' \| 'container'` | No | `window` | Where undo/redo and the pan modifier keys are listened for. Use `container` when more than one editor is on the page. |
 
 `MaskBlendMode` is the union of the CSS `mix-blend-mode` keywords: `normal`, `multiply`,
 `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`,
@@ -214,6 +215,7 @@ const CustomMaskEditor = () => {
     maxScale: 5, // Maximum zoom allowed
     enableWheelZoom: true, // Enable mouse wheel zoom
     constrainPan: true, // Keep image in view while panning
+    keyboardScope: 'window', // 'container' scopes shortcuts to the focused editor
     onScaleChange: (newScale) => console.log(`Zoom level: ${newScale}`),
     onPanChange: (x, y) => console.log(`Pan position: ${x}, ${y}`),
   });
@@ -400,6 +402,7 @@ const App = () => (
     maxScale={5}
     enableWheelZoom={true}
     constrainPan={true}
+    keyboardScope='window'
     onScaleChange={(scale) => console.log(`Zoom: ${scale}`)}
     onPanChange={(x, y) => console.log(`Pan: ${x}, ${y}`)}
   >
@@ -420,6 +423,26 @@ The editor includes sophisticated zoom and pan capabilities to enable precise ma
 - **Zoom**: Use `Ctrl/Cmd + Mouse Wheel` to zoom in/out centered on image
 - **Pan**: Hold `Space` and drag to pan the image, or use middle mouse button
 - **Resize Brush**: Use `Mouse Wheel` (without modifier keys) to adjust brush size
+- **Undo / Redo**: `Ctrl/Cmd + Z` and `Ctrl/Cmd + Y` (or `Ctrl/Cmd + Shift + Z`)
+
+### Keyboard scope
+
+By default the editor listens for shortcuts on `window`, so `Ctrl/Cmd + Z` works from
+anywhere on the page. That is the right behaviour for a single editor, but it means **two
+editors on the same page both respond to one keystroke**.
+
+Set `keyboardScope="container"` to make an editor respond only while focus is inside it:
+
+```jsx
+<MaskEditor src={src} onDrawingChange={setDrawing} keyboardScope='container' />
+```
+
+In this mode the editor takes focus when you click it, and shows a focus ring you can
+restyle through the `.react-mask-editor-inner` class. Keystrokes typed into an `<input>`,
+`<textarea>` or `contenteditable` element are ignored in both modes.
+
+Key *releases* are never scoped — a `Space` release is honoured even if focus has since
+moved, so panning cannot get stuck on.
 
 ### Zoom Control API
 

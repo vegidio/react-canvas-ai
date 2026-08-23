@@ -61,7 +61,7 @@ describe('useHistory', () => {
         act(() => result.current.undo());
 
         expect(result.current.historyIndex).toBe(0);
-        expect(ctx.putImageData).toHaveBeenCalledWith(result.current.history[0]!.imageData, 0, 0);
+        expect(ctx.putImageData).toHaveBeenCalledWith(result.current.history[0]?.imageData, 0, 0);
         expect(onUndoRequest).toHaveBeenCalledTimes(1);
     });
 
@@ -163,5 +163,35 @@ describe('useHistory', () => {
 
         expect(warn).toHaveBeenCalledWith('Failed to save history state:', expect.any(Error));
         expect(result.current.history).toEqual([]);
+    });
+});
+
+describe('same-tick saves', () => {
+    it('coalesces two saves issued before a re-render', () => {
+        const { result } = renderHook(() => useHistory(ctx, SIZE));
+
+        // Regression guard: the index was advanced by a separate updater that read the
+        // pre-render value, so the second save overwrote the first and left index at 1
+        // pointing into a one-entry array.
+        act(() => {
+            result.current.saveToHistory();
+            result.current.saveToHistory();
+        });
+
+        expect(result.current.history).toHaveLength(2);
+        expect(result.current.historyIndex).toBe(1);
+    });
+
+    it('keeps undo consistent after a same-tick double save', () => {
+        const { result } = renderHook(() => useHistory(ctx, SIZE));
+
+        act(() => {
+            result.current.saveToHistory();
+            result.current.saveToHistory();
+        });
+        act(() => result.current.undo());
+
+        expect(result.current.historyIndex).toBe(0);
+        expect(ctx.putImageData).toHaveBeenCalledWith(result.current.history[0]?.imageData, 0, 0);
     });
 });

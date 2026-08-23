@@ -14,7 +14,7 @@ export default defineConfig({
             // Vitest 4 requires an explicit include, or the report covers nothing.
             include: ['src/**/*.{ts,tsx}'],
             exclude: ['src/index.ts'],
-            thresholds: { lines: 85, functions: 90, branches: 75, statements: 85 },
+            thresholds: { lines: 95, functions: 97, branches: 84, statements: 94 },
         },
     },
 });

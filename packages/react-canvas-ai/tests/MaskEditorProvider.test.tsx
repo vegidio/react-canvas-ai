@@ -124,3 +124,29 @@ describe('MaskEditorProvider', () => {
         error.mockRestore();
     });
 });
+
+describe('context identity', () => {
+    it('keeps the same value across a parent re-render with unchanged props', () => {
+        const seen: MaskEditorContextValue[] = [];
+        const Probe = () => {
+            seen.push(useMaskEditorContext());
+            return null;
+        };
+
+        const onDrawingChange = vi.fn();
+        const Tree = () => (
+            <MaskEditorProvider src={SRC} onDrawingChange={onDrawingChange}>
+                <Probe />
+            </MaskEditorProvider>
+        );
+
+        const { rerender } = render(<Tree />);
+        const before = seen.length;
+        rerender(<Tree />);
+
+        // Regression guard: the hook returned a fresh object every render, so every consumer
+        // re-rendered on every provider render.
+        expect(seen.length).toBeGreaterThan(before);
+        expect(seen[seen.length - 1]).toBe(seen[before - 1]);
+    });
+});

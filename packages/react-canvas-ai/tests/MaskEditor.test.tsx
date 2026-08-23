@@ -1,5 +1,5 @@
 import { createRef } from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
 import { MaskEditor } from '../src/components/MaskEditor';
@@ -42,12 +42,17 @@ describe('structure', () => {
         expect(container.querySelectorAll('canvas')).toHaveLength(3);
     });
 
-    it('is focusable and swallows Space so the page does not scroll', async () => {
-        const { root } = renderEditor();
-        expect(root).toHaveAttribute('tabindex', '0');
+    // The focusable element is the inner container, not the outer wrapper: container-scoped
+    // shortcuts test `container.contains(document.activeElement)`, and the wrapper is an
+    // ancestor of the container rather than part of it.
+    it('makes the container focusable and swallows Space so the page does not scroll', () => {
+        const { container } = renderEditor();
+        const inner = container.querySelector('.react-mask-editor-inner') as HTMLElement;
+        expect(inner).toHaveAttribute('tabindex', '0');
+        expect(inner).toHaveAttribute('role', 'application');
 
         const evt = new KeyboardEvent('keydown', { code: 'Space', bubbles: true, cancelable: true });
-        root.dispatchEvent(evt);
+        inner.dispatchEvent(evt);
         expect(evt.defaultPrevented).toBe(true);
     });
 });
@@ -172,5 +177,72 @@ describe('imperative ref', () => {
             ref.current?.undo();
             ref.current?.redo();
         }).not.toThrow();
+    });
+});
+
+describe('keyboardScope', () => {
+    const ctrlZ = () => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'z', ctrlKey: true, bubbles: true }));
+
+    const innerOf = (el: HTMLElement) => el.querySelector('.react-mask-editor-inner') as HTMLElement;
+
+    function renderPair(props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) {
+        const first = vi.fn();
+        const second = vi.fn();
+        const utils = render(
+            <>
+                <MaskEditor src={SRC} onDrawingChange={vi.fn()} onUndoRequest={first} {...props} />
+                <MaskEditor src={SRC} onDrawingChange={vi.fn()} onUndoRequest={second} {...props} />
+            </>,
+        );
+        const editors = utils.container.querySelectorAll('.react-mask-editor-outer');
+        return { first, second, editors: [...editors] as HTMLElement[] };
+    }
+
+    it('lets both editors answer one shortcut by default', () => {
+        const { first, second } = renderPair();
+
+        ctrlZ();
+
+        // This is why the opt-in exists: page-level undo is right for one editor and wrong
+        // for two, so the default stays and the fix is opt-in.
+        expect(first).toHaveBeenCalledTimes(1);
+        expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it("routes the shortcut to the focused editor only in 'container' mode", () => {
+        const { first, second, editors } = renderPair({ keyboardScope: 'container' });
+
+        innerOf(editors[1]).focus();
+        ctrlZ();
+
+        expect(first).not.toHaveBeenCalled();
+        expect(second).toHaveBeenCalledTimes(1);
+    });
+
+    it("ignores the shortcut when neither editor has focus in 'container' mode", () => {
+        const { first, second } = renderPair({ keyboardScope: 'container' });
+
+        ctrlZ();
+
+        expect(first).not.toHaveBeenCalled();
+        expect(second).not.toHaveBeenCalled();
+    });
+
+    it("focuses the container on mousedown in 'container' mode", () => {
+        const { container } = renderEditor({ keyboardScope: 'container' });
+        const inner = container.querySelector('.react-mask-editor-inner') as HTMLElement;
+
+        // The canvases preventDefault on mousedown, which suppresses the focus a click would
+        // otherwise give — so the shortcut would never be in scope without this.
+        fireEvent.mouseDown(inner);
+        expect(document.activeElement).toBe(inner);
+    });
+
+    it('leaves focus alone on mousedown under the default scope', () => {
+        const { container } = renderEditor();
+        const inner = container.querySelector('.react-mask-editor-inner') as HTMLElement;
+
+        fireEvent.mouseDown(inner);
+        expect(document.activeElement).not.toBe(inner);
     });
 });

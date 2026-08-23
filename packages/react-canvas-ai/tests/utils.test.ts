@@ -50,7 +50,7 @@ describe('toMask', () => {
     it('forces alpha to fully opaque on every pixel', () => {
         const { canvas, snapshots } = seed();
         toMask(canvas);
-        const alphas = snapshots[0]!.filter((_, i) => i % 4 === 3);
+        const alphas = snapshots[0]?.filter((_, i) => i % 4 === 3);
         expect(alphas).toEqual([255, 255, 255]);
     });
 
@@ -108,16 +108,21 @@ describe('hexToRgb', () => {
         expect(hexToRgb('ffffff')).toEqual([255, 255, 255]);
     });
 
-    // KNOWN LIMITATION: the implementation chunks into pairs, so three-digit shorthand
-    // yields ['ff', 'f'] rather than expanding. Pinned so a future fix is deliberate.
-    it('mis-parses three-digit shorthand', () => {
-        expect(hexToRgb('#fff')).toEqual([255, 15]);
+    // Regression guard: chunking into pairs used to read '#fff' as ['ff', 'f'], so
+    // shorthand white was painted as orange.
+    it('expands three-digit shorthand per nibble', () => {
+        expect(hexToRgb('#fff')).toEqual([255, 255, 255]);
+        expect(hexToRgb('#0a0')).toEqual([0, 170, 0]);
     });
 
-    // KNOWN LIMITATION: non-hex input produces NaN rather than throwing or defaulting.
-    // The NaN array is truthy, so callers guarding with `if (color)` still use it.
-    it('yields NaN components for non-hex input', () => {
-        expect(hexToRgb('#GGGGGG')).toEqual([Number.NaN, Number.NaN, Number.NaN]);
+    // Regression guard: non-hex input used to produce NaN channels, which clamp silently
+    // to 0 once written into an ImageData buffer.
+    it('falls back to black for non-hex input', () => {
+        expect(hexToRgb('#GGGGGG')).toEqual([0, 0, 0]);
+    });
+
+    it('falls back to black for a wrong-length hex string', () => {
+        expect(hexToRgb('#ffff')).toEqual([0, 0, 0]);
     });
 
     it('falls back to black when nothing matches', () => {

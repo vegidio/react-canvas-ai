@@ -10,9 +10,9 @@ function App() {
     const [color, setColor] = React.useState('#c3c3c3');
     const [scale, setScale] = React.useState(1);
     const [panPosition, setPanPosition] = React.useState({ x: 0, y: 0 });
+    const [drawing, setDrawing] = React.useState(false);
     const imgSrc =
         'https://static.vecteezy.com/system/resources/previews/049/855/471/large_2x/nature-background-high-resolution-wallpaper-for-a-serene-and-stunning-view-free-photo.jpg';
-    console.log('Mask:', mask);
 
     return (
         <>
@@ -91,9 +91,7 @@ function App() {
                             onCursorSizeChange={setSize}
                             canvasRef={canvas}
                             maskOpacity={0.5}
-                            onDrawingChange={console.log}
-                            onUndoRequest={() => console.log('Undo requested')}
-                            onRedoRequest={() => console.log('Redo requested')}
+                            onDrawingChange={setDrawing}
                             onMaskChange={setMask}
                             scale={scale}
                             maxScale={4}
@@ -148,7 +146,7 @@ function App() {
                     <button
                         type='button'
                         onClick={() => {
-                            // Usar la nueva función resetZoom en lugar de solo setScale
+                            // Prefer the imperative resetZoom, which also recentres the view.
                             if (canvas.current?.resetZoom) {
                                 canvas.current.resetZoom();
                             } else {
@@ -158,6 +156,7 @@ function App() {
                     >
                         Reset Zoom
                     </button>
+                    <span style={{ color: '#888' }}>{drawing ? 'Drawing…' : 'Idle'}</span>
                     <button
                         type='button'
                         onClick={() => {

@@ -26,9 +26,9 @@
                 "noForEach": "off"
             },
             "correctness": {
-                "noUnusedImports": "warn",
+                "noUnusedImports": "error",
                 "useUniqueElementIds": "off",
-                "useExhaustiveDependencies": "warn"
+                "useExhaustiveDependencies": "error"
             },
             "suspicious": {
                 "noArrayIndexKey": "off"

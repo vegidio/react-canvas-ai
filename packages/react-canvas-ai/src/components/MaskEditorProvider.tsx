@@ -10,6 +10,8 @@ export const MaskEditorProvider: React.FC<UseMaskEditorProps & { children: React
     children,
     ...props
 }) => {
+    // `useMaskEditor` memoizes its return, so consumers only re-render when something it
+    // exposes actually changed — this used to be a fresh object on every provider render.
     const value = useMaskEditor(props);
     return <MaskEditorContext.Provider value={value}>{children}</MaskEditorContext.Provider>;
 };

@@ -143,8 +143,16 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
         }
     }, []);
 
-    // Add a debug ID to see if component rendered when image is missing
-    const uniqueId = React.useMemo(() => Math.random().toString(36).substring(2, 9), []);
+    // The canvases call preventDefault on mousedown, which suppresses the focus change a
+    // click would normally cause. Container-scoped shortcuts are gated on focus, so without
+    // this a user could click the editor and find Ctrl+Z did nothing.
+    const scopeToContainer = props.keyboardScope === 'container';
+    const handleContainerMouseDown = React.useCallback(() => {
+        if (scopeToContainer) containerRef.current?.focus();
+    }, [scopeToContainer, containerRef]);
+
+    // Stable across server and client renders; Math.random() here was a hydration mismatch.
+    const uniqueId = React.useId();
 
     return (
         <div
@@ -156,12 +164,17 @@ export const MaskEditor: React.FC<MaskEditorProps> = (props) => {
                 maxHeight: props.maxHeight ? `${props.maxHeight}px` : undefined,
                 ...style,
             }}
-            role='application'
-            // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-driven canvas surface; must be focusable to intercept Space before the page scrolls
-            tabIndex={0}
-            onKeyDown={handleKeyDown}
         >
-            <div className='react-mask-editor-inner' ref={containerRef} style={innerStyle}>
+            <div
+                className='react-mask-editor-inner'
+                ref={containerRef}
+                style={innerStyle}
+                role='application'
+                // biome-ignore lint/a11y/noNoninteractiveTabindex: keyboard-driven canvas surface; must be focusable to intercept Space before the page scrolls, and to scope shortcuts when keyboardScope is 'container'
+                tabIndex={0}
+                onKeyDown={handleKeyDown}
+                onMouseDown={handleContainerMouseDown}
+            >
                 <div className='canvas-container' style={containerStyle}>
                     <div className='all-canvases' style={canvasLayerStyle}>
                         <canvas

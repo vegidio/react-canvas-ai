@@ -25,6 +25,7 @@ describe('public API', () => {
             maxScale: 4,
             enableWheelZoom: true,
             constrainPan: true,
+            keyboardScope: 'window',
         });
     });
 });

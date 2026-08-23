@@ -5,8 +5,20 @@
  *
  * Returns a restore function.
  */
-export function mockImageLoad(opts: { width: number; height: number; fail?: boolean }): () => void {
+export interface MockImage {
+    width: number;
+    height: number;
+    fail?: boolean;
+    /** Milliseconds to wait before firing, for staging a load race. Default: a microtask. */
+    delay?: number;
+}
+
+/** Either one response for every source, or a function picking one per source. */
+export type MockImageResolver = MockImage | ((src: string) => MockImage);
+
+export function mockImageLoad(opts: MockImageResolver): () => void {
     const original = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    const resolve = (src: string): MockImage => (typeof opts === 'function' ? opts(src) : opts);
 
     Object.defineProperty(HTMLImageElement.prototype, 'src', {
         configurable: true,
@@ -15,18 +27,21 @@ export function mockImageLoad(opts: { width: number; height: number; fail?: bool
         },
         set(this: HTMLImageElement & { _src?: string }, value: string) {
             this._src = value;
+            const config = resolve(value);
             for (const [key, val] of [
-                ['naturalWidth', opts.width],
-                ['naturalHeight', opts.height],
-                ['width', opts.width],
-                ['height', opts.height],
+                ['naturalWidth', config.width],
+                ['naturalHeight', config.height],
+                ['width', config.width],
+                ['height', config.height],
             ] as const) {
                 Object.defineProperty(this, key, { value: val, configurable: true });
             }
-            queueMicrotask(() => {
-                if (opts.fail) this.onerror?.(new Event('error'));
+            const fire = () => {
+                if (config.fail) this.onerror?.(new Event('error'));
                 else this.onload?.(new Event('load'));
-            });
+            };
+            if (config.delay) setTimeout(fire, config.delay);
+            else queueMicrotask(fire);
         },
     });
 

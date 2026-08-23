@@ -1,3 +1,4 @@
+import * as React from 'react';
 import { MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
 import cat from './assets/images/cat.jpg';
 
@@ -61,8 +62,12 @@ function MaskEditorControls() {
 }
 
 export default function MaskEditorProviderExample() {
+    // Hoisted out of the JSX: an inline arrow here is a new function on every render, which
+    // invalidates the hook's memoized callbacks downstream.
+    const handleDrawingChange = React.useCallback(() => {}, []);
+
     return (
-        <MaskEditorProvider src={cat} onDrawingChange={(drawing) => console.log('Drawing:', drawing)}>
+        <MaskEditorProvider src={cat} onDrawingChange={handleDrawingChange}>
             <h2>MaskEditorProvider Example</h2>
             <MaskEditorCanvas />
             <MaskEditorControls />

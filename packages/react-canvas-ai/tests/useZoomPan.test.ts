@@ -327,11 +327,10 @@ describe('body cursor handover', () => {
     });
 });
 
-describe('deferred transform writes', () => {
-    // KNOWN BUG: zoomIn defers its setTransform into a setTimeout(0), so a reset issued
-    // before that timer fires is overwritten by the stale zoom. Pinned so the eventual
-    // fix is a deliberate change rather than a surprise.
-    it('lets a pending zoomIn clobber an intervening resetZoom', () => {
+describe('write ordering', () => {
+    // Regression guard: zoomIn used to defer its setTransform into a setTimeout(0), so a
+    // reset issued before that timer fired was overwritten by the stale zoom.
+    it('lets a resetZoom override a preceding zoomIn', () => {
         const { result } = setup();
 
         act(() => result.current[1].zoomIn());
@@ -339,6 +338,182 @@ describe('deferred transform writes', () => {
         flush();
 
         expect(result.current[0].scale).toBe(1);
-        expect(result.current[0].transform.scale).toBeCloseTo(1.2);
+        expect(result.current[0].transform.scale).toBe(1);
+    });
+
+    it('reports effectiveScale from the current commit, not the previous one', () => {
+        const { result } = setup();
+
+        act(() => result.current[1].zoomIn());
+
+        // No flush: the refs used to lag a commit behind, so the CSS transform rendered one
+        // step stale after every zoom.
+        expect(result.current[0].effectiveScale).toBeCloseTo(result.current[0].baseScale * 1.2);
+    });
+});
+
+describe('multi-instance body cursor', () => {
+    it('restores the page cursor only once the last editor releases it', () => {
+        document.body.style.cursor = 'crosshair';
+
+        const first = setup();
+        const second = setup();
+        zoomInto(first.result);
+        zoomInto(second.result);
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        act(() => {
+            container.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true }));
+        });
+
+        expect(first.result.current[0].isPanning).toBe(true);
+        expect(second.result.current[0].isPanning).toBe(true);
+        expect(document.body.style.cursor).toBe('grabbing');
+
+        // Regression guard: the saved cursor used to live in a module global, so the second
+        // instance recorded `grabbing` as the original and restored that on release.
+        first.unmount();
+        expect(document.body.style.cursor).toBe('grabbing');
+
+        second.unmount();
+        expect(document.body.style.cursor).toBe('crosshair');
+
+        document.body.style.cursor = '';
+    });
+});
+
+describe('pan listener stability', () => {
+    it('accumulates a drag without re-registering its listeners on every move', () => {
+        const { result } = setup({ constrainPan: false });
+        zoomInto(result);
+
+        act(() => {
+            container.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true, clientX: 0, clientY: 0 }));
+        });
+
+        const addSpy = vi.spyOn(window, 'addEventListener');
+
+        for (let i = 1; i <= 5; i++) {
+            act(() => {
+                window.dispatchEvent(new MouseEvent('mousemove', { clientX: i * 10, clientY: 0 }));
+            });
+        }
+
+        // transform.scale is 1.4 after zoomInto, so each 10px step moves 10 / 1.4 image px.
+        expect(result.current[0].transform.translateX).toBeCloseTo(50 / 1.4);
+        expect(addSpy.mock.calls.filter(([type]) => type === 'mousemove')).toHaveLength(0);
+
+        act(() => {
+            window.dispatchEvent(new MouseEvent('mouseup'));
+        });
+    });
+});
+
+describe('container resize', () => {
+    it('re-fits against the current content size, not the one it mounted with', () => {
+        const original = globalThis.ResizeObserver;
+        let fire: (() => void) | undefined;
+
+        globalThis.ResizeObserver = class implements ResizeObserver {
+            constructor(callback: ResizeObserverCallback) {
+                fire = () => callback([], this);
+            }
+            observe(): void {}
+            unobserve(): void {}
+            disconnect(): void {}
+        };
+
+        try {
+            const ref = { current: container } as React.RefObject<HTMLDivElement | null>;
+            const { result, rerender } = renderHook(({ content }) => useZoomPan(ref, content), {
+                initialProps: { content: { x: 100, y: 100 } },
+            });
+            expect(result.current[0].baseScale).toBe(1);
+
+            rerender({ content: { x: 400, y: 400 } });
+            expect(result.current[0].baseScale).toBe(0.5);
+
+            // Shrink the container, then let the observer fire. The callback used to close
+            // over the mount-time content size, so it re-fitted to 100x100 and reported 1.
+            Object.defineProperty(container, 'clientWidth', { value: 100, configurable: true });
+            Object.defineProperty(container, 'clientHeight', { value: 100, configurable: true });
+            act(() => fire?.());
+
+            expect(result.current[0].baseScale).toBe(0.25);
+        } finally {
+            globalThis.ResizeObserver = original;
+        }
+    });
+});
+
+describe('keyboardScope', () => {
+    /** A focusable stand-in for the container the editor renders. */
+    function focusableContainer() {
+        container.tabIndex = 0;
+        return container;
+    }
+
+    it('responds to Space from anywhere on the page by default', () => {
+        const { result } = setup();
+        zoomInto(result);
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        expect(result.current[0].isSpaceKeyDown).toBe(true);
+    });
+
+    it("ignores Space while focus is outside the editor in 'container' mode", () => {
+        const { result } = setup({ keyboardScope: 'container' });
+        zoomInto(result);
+
+        const outside = document.createElement('button');
+        document.body.append(outside);
+        outside.focus();
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+
+        expect(result.current[0].isSpaceKeyDown).toBe(false);
+        outside.remove();
+    });
+
+    it("responds to Space once the container holds focus in 'container' mode", () => {
+        const { result } = setup({ keyboardScope: 'container' });
+        zoomInto(result);
+
+        // `Node.contains` is true for the node itself, so focusing the container counts.
+        focusableContainer().focus();
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        expect(result.current[0].isSpaceKeyDown).toBe(true);
+    });
+
+    it('still releases Space after focus has left, so panning cannot stick', () => {
+        const { result } = setup({ keyboardScope: 'container' });
+        zoomInto(result);
+        focusableContainer().focus();
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        expect(result.current[0].isSpaceKeyDown).toBe(true);
+
+        // keyup stays unscoped on purpose: a release seen after focus moved must still land.
+        const outside = document.createElement('button');
+        document.body.append(outside);
+        outside.focus();
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space' }));
+        });
+
+        expect(result.current[0].isSpaceKeyDown).toBe(false);
+        outside.remove();
     });
 });
