@@ -12,7 +12,12 @@ runs:
   using: composite
   steps:
     - name: Set up pnpm
+      # Pinned here rather than via a `packageManager` field in package.json: that field is
+      # enforced by Corepack and by pnpm itself, which would lock every contributor to one
+      # exact version. CI needs a reproducible pnpm; local clones do not.
       uses: pnpm/action-setup@v4
+      with:
+        version: '11'
 
     - name: Set up Node.js
       uses: actions/setup-node@v4

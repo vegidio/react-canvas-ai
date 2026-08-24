@@ -20,6 +20,7 @@ It’s built as an enhanced fork of [`react-mask-editor`](https://www.npmjs.com/
 ## 🚀 Features
 
 - ✅ Draw 1-bit (black/white) masks over any image using a brush tool
+- 🩹 Erase with `Shift` + drag or the secondary mouse button
 - 🔁 Undo/redo and clear support
 - 🎨 Customizable brush: size, color, opacity, blend mode
 - 🔍 Zoom and pan capabilities for precise mask editing
@@ -136,7 +137,7 @@ const MyComponent = () => {
 | `cursorSize` | `number` | No | `10` | Radius in pixels of the brush. |
 | `onCursorSizeChange` | `(size: number) => void` | No | — | Called when the user changes the brush size with the wheel. Omit it and wheel resizing is disabled. |
 | `maskOpacity` | `number` | No | `0.4` | CSS opacity of the mask layer, 0–1. |
-| `maskColor` | `string` | No | `#ffffff` | Hex colour for the mask, with or without the leading `#`. |
+| `maskColor` | `string` | No | `#ffffff` | Hex colour for the mask, with or without the leading `#`. Changing it retints strokes that are already on the canvas. |
 | `maskBlendMode` | `MaskBlendMode` | No | `normal` | [CSS blend mode](https://developer.mozilla.org/en-US/docs/Web/CSS/blend-mode) for the mask layer. |
 | `maxWidth` | `number` | No | `1240` | Images wider than this are scaled down. |
 | `maxHeight` | `number` | No | `1240` | Images taller than this are scaled down. |
@@ -144,7 +145,7 @@ const MyComponent = () => {
 | `onUndoRequest` | `() => void` | No | — | Called when the user requests an undo. |
 | `onRedoRequest` | `() => void` | No | — | Called when the user requests a redo. |
 | `onMaskChange` | `(mask: string) => void` | No | — | Called with the mask as a data URL. Debounced while drawing. |
-| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. |
+| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. Expects exactly what `onMaskChange` produces — white is masked, black is not — and the round trip is lossless. |
 | `scale` | `number` | No | `1` | Initial zoom scale. |
 | `minScale` | `number` | No | `0.8` | Minimum zoom scale. |
 | `maxScale` | `number` | No | `4` | Maximum zoom scale. |
@@ -166,7 +167,7 @@ The `MaskEditor` component exposes useful methods via `ref`:
 
 | Name            | Type                             | Description                                                    |
 | --------------- | -------------------------------- | -------------------------------------------------------------- |
-| `maskCanvas?`   | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. |
+| `maskCanvas?`   | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. See the representation note below. |
 | `maskColor`     | `string`                         | The colour strokes are currently painted with.                 |
 | `maskOpacity`   | `number`                         | The mask layer's current opacity.                              |
 | `maskBlendMode` | `MaskBlendMode`                  | The mask layer's current `mix-blend-mode`.                     |
@@ -182,6 +183,12 @@ The `MaskEditor` component exposes useful methods via `ref`:
 The four style members are live reads of what the editor is painting with right now, so a peer
 component or plugin that draws into `maskCanvas` itself can match hand-painted strokes without
 being handed the same style props a second time.
+
+The mask layer holds `maskColor` at full alpha wherever the image is masked and is **fully
+transparent everywhere else** — coverage is the state, and no colour is reserved to mean
+anything. If you draw into `maskCanvas` yourself, add coverage with alpha and remove it with
+`globalCompositeOperation = 'destination-out'`; painting an opaque "background" colour over a
+stroke does not unmask it, it just paints over the photo.
 
 ---
 
@@ -422,6 +429,7 @@ The editor includes sophisticated zoom and pan capabilities to enable precise ma
 
 - **Zoom**: Use `Ctrl/Cmd + Mouse Wheel` to zoom in/out centered on image
 - **Pan**: Hold `Space` and drag to pan the image, or use middle mouse button
+- **Erase**: Hold `Shift` and drag, or drag with the secondary mouse button, to rub the mask away
 - **Resize Brush**: Use `Mouse Wheel` (without modifier keys) to adjust brush size
 - **Undo / Redo**: `Ctrl/Cmd + Z` and `Ctrl/Cmd + Y` (or `Ctrl/Cmd + Shift + Z`)
 
@@ -568,6 +576,16 @@ version number. Pin an exact version if you need to upgrade deliberately.
 8. **`onDrawingChange` no longer fires at mount.** It is reported from the pointer handlers
    that own the transition, so the spurious `false` before the user had touched the canvas
    is gone.
+9. **The mask canvas holds coverage, not colour.** Masked pixels are `maskColor` at full
+   alpha and everything else is fully transparent — there is no white "background" value any
+   more. Erasing removes coverage (`destination-out`) instead of painting white over it,
+   `toMask` classifies by alpha instead of RGB, and `initialMask` is converted into that
+   representation rather than drawn over a white fill. This fixes erasing (which used to
+   smear white across the image and never unmask the export), `maskColor: '#000000'` (which
+   exported as blank), retinting a mask painted in the default white, the white fringes left
+   on any `maskColor` with `r === 255`, and the `onMaskChange` → `initialMask` round trip
+   (which used to come back masked everywhere). If you paint into `maskCanvas` yourself, use
+   alpha rather than a background colour.
 
 ### Earlier breaking changes (from `26.8.x`)
 
@@ -682,7 +700,9 @@ Sources worth re-checking when the time comes:
 ## 📜 Notes
 
 - All mask operations are done on a separate canvas for performance
-- The mask is returned as a **black-and-white PNG (base64)**
+- The mask is returned as a **black-and-white PNG (base64)** — white where masked, black where
+  not. A pixel counts as masked when the mask layer is at least half covered there, so
+  anti-aliased stroke edges resolve on export the same way they look on screen
 - Supports up to 50 undo/redo steps
 - Forked and modernized from [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor)
 

@@ -10,7 +10,6 @@
         "url": "git+https://github.com/vegidio/react-canvas-ai.git"
     },
     "homepage": "https://github.com/vegidio/react-canvas-ai#readme",
-    "packageManager": "pnpm@11.22.0",
     "engines": {
         "node": ">=24"
     },
