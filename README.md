@@ -50,14 +50,14 @@ There is **no stylesheet to import** — the component applies everything it nee
 ## 👨‍💼 Basic Usage – React Component
 
 ```tsx
-import React from 'react';
+import { useRef } from 'react';
 import { MaskEditor, toMask } from 'react-canvas-ai';
 
 const MyComponent = () => {
-  const canvas = React.useRef(null);
+  const canvas = useRef(null);
   return (
     <>
-      <MaskEditor src="https://placekitten.com/256/256" canvasRef={canvas} />
+      <MaskEditor src="https://placekitten.com/256/256" ref={canvas} />
       <button
         onClick={() => {
           if (canvas.current?.maskCanvas) {
@@ -77,18 +77,18 @@ const MyComponent = () => {
 You can resume editing from a previously saved mask by passing it as the `initialMask` prop:
 
 ```tsx
-import React from 'react';
+import { useRef, useState } from 'react';
 import { MaskEditor, toMask } from 'react-canvas-ai';
 
 const MyComponent = () => {
-  const canvas = React.useRef(null);
-  const [savedMask, setSavedMask] = React.useState(null);
+  const canvas = useRef(null);
+  const [savedMask, setSavedMask] = useState(null);
 
   return (
     <>
       <MaskEditor 
         src="https://placekitten.com/256/256" 
-        canvasRef={canvas}
+        ref={canvas}
         initialMask={savedMask} // Load previously saved mask
         onMaskChange={(mask) => {
           // Auto-save mask on changes
@@ -130,6 +130,7 @@ const MyComponent = () => {
 | --- | --- | --- | --- | --- |
 | `src` | `string` | Yes | — | Source URL of the image to edit. |
 | `onDrawingChange` | `(isDrawing: boolean) => void` | Yes | — | Called when the user starts or stops drawing. |
+| `ref` | `Ref<MaskEditorCanvasRef>` | No | — | The editor's imperative handle — see [Ref API](#-ref-api-maskeditorcanvasref). Was `canvasRef` before the React 19 release. |
 | `className` | `string` | No | — | Appended to the root element's own class name. |
 | `style` | `React.CSSProperties` | No | — | Merged over the root element's built-in layout styles (yours win). |
 | `cursorSize` | `number` | No | `10` | Radius in pixels of the brush. |
@@ -228,7 +229,7 @@ const CustomMaskEditor = () => {
     onPanChange: (x, y) => console.log(`Pan position: ${x}, ${y}`),
   });
 
-  const transformStyle = React.useMemo(() => {
+  const transformStyle = useMemo(() => {
     return {
       position: 'absolute' as const,
       top: '50%',
@@ -472,7 +473,7 @@ Perfect for implementing custom toolbar zoom controls with buttons or sliders!
 ```tsx
 // Example of programmatically controlling zoom and pan
 const CustomZoomControls = () => {
-  const maskEditorRef = React.useRef(null);
+  const maskEditorRef = useRef(null);
 
   return (
     <>
@@ -526,10 +527,49 @@ the `style` prop (it is merged last and wins) or `!important` in your own styles
 
 ---
 
-## 🔀 Migrating from `26.8.x`
+## 🔀 Migrating to the React 19 release
 
 CalVer carries no semver signal, so breaking changes are called out here rather than in the
 version number. Pin an exact version if you need to upgrade deliberately.
+
+1. **React 19.2 or newer is required.** The peer range was `>=18 <20` and is now `^19.2.0`.
+   This is what lets the package use `useEffectEvent`, ref callbacks with cleanup and the
+   `<Context>` provider shorthand instead of hand-rolled equivalents.
+2. **`MaskEditor`'s `canvasRef` prop is now `ref`.** React 19 passes `ref` as an ordinary
+   prop, so the editor's imperative handle uses the standard spelling:
+   ```diff
+   - <MaskEditor src={src} canvasRef={canvas} />
+   + <MaskEditor src={src} ref={canvas} />
+   ```
+3. **`containerProps.ref` is a callback ref.** Spread `containerProps` rather than reaching
+   into it — the zoom/pan wiring has to be told when the container attaches, which a ref
+   object cannot do. `containerRef` is still returned, but it is an *output*: attaching it
+   by hand instead of spreading `containerProps` leaves the editor unable to fit, zoom or
+   pan.
+4. **`canvasRef`, `maskCanvasRef` and `cursorCanvasRef` are callable refs.** They are now
+   `ElementHandle`, which is a ref callback that also carries `.current`. Both
+   `<canvas ref={maskCanvasRef} />` and `maskCanvasRef.current` keep working unchanged; only
+   the type differs. This is what lets a conditionally rendered canvas still receive its 2D
+   context and brush listeners.
+5. **`setCursorSize` takes a number.** It used to be typed as the raw `useState` dispatch.
+   Updater functions are no longer accepted:
+   ```diff
+   - setCursorSize((n) => n + 1);
+   + setCursorSize(cursorSize + 1);
+   ```
+6. **A re-fit preserves your zoom.** `scale` and `transform.scale` used to be separate state
+   that disagreed: the mount fit wrote the transform without touching `scale`, so
+   `scale={2}` rendered zoomed but could not be panned. They are one value now — an initial
+   scale above 1 both renders and pans, and a container resize recentres the pan while
+   keeping the zoom instead of silently discarding it.
+7. **`onScaleChange` and `onPanChange` are diff-based.** They fire when the value actually
+   changes, so they no longer report `1` and `(0, 0)` at mount, and a redundant `resetZoom()`
+   at the default view reports nothing.
+8. **`onDrawingChange` no longer fires at mount.** It is reported from the pointer handlers
+   that own the transition, so the spurious `false` before the user had touched the canvas
+   is gone.
+
+### Earlier breaking changes (from `26.8.x`)
 
 1. **`history` is now `historyLength`.** The hook used to hand back the raw `ImageData[]`,
    which kept every retained undo state alive for as long as you held the hook's return
@@ -576,8 +616,8 @@ version number. Pin an exact version if you need to upgrade deliberately.
 3. **Drop ref casts.** Refs are now typed `RefObject<T | null>`, matching what
    `useRef<T>(null)` actually returns under React 19:
    ```diff
-   - const canvas = React.useRef<MaskEditorCanvasRef>(null) as React.RefObject<MaskEditorCanvasRef>;
-   + const canvas = React.useRef<MaskEditorCanvasRef>(null);
+   - const canvas = useRef<MaskEditorCanvasRef>(null) as RefObject<MaskEditorCanvasRef>;
+   + const canvas = useRef<MaskEditorCanvasRef>(null);
    ```
 4. **Re-check your version range.** Versioning is CalVer now — see
    [Installation](#-installation).

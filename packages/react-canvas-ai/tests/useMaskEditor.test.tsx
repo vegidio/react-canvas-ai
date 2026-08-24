@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { UseMaskEditorProps } from '../src/hooks/useMaskEditor';
@@ -22,7 +23,7 @@ const setup = (props: Partial<UseMaskEditorProps> = {}) => {
         const state = useMaskEditor({ src: SRC, onDrawingChange, ...props } as UseMaskEditorProps);
         captured.current = state;
         return (
-            <div ref={state.containerRef}>
+            <div {...state.containerProps}>
                 <canvas ref={state.canvasRef} />
                 <canvas ref={state.maskCanvasRef} />
                 <canvas
@@ -39,6 +40,75 @@ const setup = (props: Partial<UseMaskEditorProps> = {}) => {
     const cursorCanvas = () => state().cursorCanvasRef.current as HTMLCanvasElement;
     return { ...utils, state, cursorCanvas, onDrawingChange };
 };
+
+describe('late-mounting canvases', () => {
+    /**
+     * A headless consumer is free to render the canvas stack conditionally. Because the hook
+     * tracks each element as state rather than reading a ref object once, the 2D context and
+     * the brush listeners still arrive when the canvas does — this used to attach at mount
+     * against nothing and never retry.
+     */
+    const setupDeferred = () => {
+        const captured: { current?: ReturnType<typeof useMaskEditor> } = {};
+        let show: (value: boolean) => void = () => {};
+
+        const Harness = () => {
+            const [ready, setReady] = useState(false);
+            show = setReady;
+
+            const state = useMaskEditor({ src: SRC, onDrawingChange: vi.fn() });
+            captured.current = state;
+
+            return (
+                <div {...state.containerProps}>
+                    {ready ? (
+                        <>
+                            <canvas ref={state.canvasRef} />
+                            <canvas ref={state.maskCanvasRef} />
+                            <canvas
+                                ref={state.cursorCanvasRef}
+                                onMouseDown={state.handleMouseDown}
+                                onMouseUp={state.handleMouseUp}
+                            />
+                        </>
+                    ) : undefined}
+                </div>
+            );
+        };
+
+        const utils = render(<Harness />);
+        return { ...utils, state: () => captured.current as ReturnType<typeof useMaskEditor>, show };
+    };
+
+    it('wires a canvas that mounts after the first render', async () => {
+        const { state, show } = setupDeferred();
+        await settle();
+
+        expect(state().cursorCanvasRef.current).toBeNull();
+
+        await act(async () => {
+            show(true);
+        });
+        await settle();
+
+        const cursorCanvas = state().cursorCanvasRef.current as HTMLCanvasElement;
+        expect(cursorCanvas).toBeInstanceOf(HTMLCanvasElement);
+
+        // A native mousemove, not the declarative onMouseDown prop: this is the listener
+        // `useBrushCursor` attaches imperatively, and painting proves the mask layer also got
+        // its 2D context. Both used to be wired once at mount and never again.
+        const maskCtx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        const arc = vi.spyOn(maskCtx, 'arc');
+
+        act(() => {
+            cursorCanvas.dispatchEvent(
+                new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, buttons: 1 }),
+            );
+        });
+
+        expect(arc).toHaveBeenCalled();
+    });
+});
 
 describe('wiring', () => {
     it('starts with empty size and no drawing in progress', () => {
@@ -272,13 +342,19 @@ describe('drawing', () => {
         const { cursorCanvas, state, onDrawingChange } = setup();
         await settle();
 
+        // Reported from the handlers, so mounting alone says nothing: this used to fire a
+        // spurious `false` from an effect before the user had touched the canvas.
+        expect(onDrawingChange).not.toHaveBeenCalled();
+
         mouse(cursorCanvas(), 'mousedown');
         expect(state().isDrawing).toBe(true);
-        expect(onDrawingChange).toHaveBeenCalledWith(true);
+        expect(onDrawingChange).toHaveBeenCalledTimes(1);
+        expect(onDrawingChange).toHaveBeenLastCalledWith(true);
 
         mouse(cursorCanvas(), 'mouseup');
         expect(state().isDrawing).toBe(false);
-        expect(onDrawingChange).toHaveBeenCalledWith(false);
+        expect(onDrawingChange).toHaveBeenCalledTimes(2);
+        expect(onDrawingChange).toHaveBeenLastCalledWith(false);
     });
 
     it('reports the mask after a stroke finishes', async () => {
@@ -449,7 +525,7 @@ describe('mask colour', () => {
         const Harness = ({ maskColor }: { maskColor: string }) => {
             const state = useMaskEditor({ src: SRC, maskColor, onDrawingChange: vi.fn() });
             return (
-                <div ref={state.containerRef}>
+                <div {...state.containerProps}>
                     <canvas ref={state.canvasRef} />
                     <canvas ref={state.maskCanvasRef} />
                     <canvas ref={state.cursorCanvasRef} />
@@ -479,7 +555,7 @@ describe('changing src', () => {
             const state = useMaskEditor({ src, onDrawingChange: vi.fn() });
             sizes.push(state.size);
             return (
-                <div ref={state.containerRef}>
+                <div {...state.containerProps}>
                     <canvas ref={state.canvasRef} />
                     <canvas ref={state.maskCanvasRef} />
                     <canvas ref={state.cursorCanvasRef} />

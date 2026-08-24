@@ -1,3 +1,4 @@
+import type { Rgb } from '../utils';
 import type { Point } from './geometry';
 
 /** Shown when the source image reports no usable dimensions. */
@@ -48,7 +49,7 @@ export const paintMaskDot = (
  * Repaints every non-background pixel of the mask in `rgb`. Background is identified by a
  * red channel of 255, which is what the white fill the mask starts from leaves behind.
  */
-export const recolorMask = (ctx: CanvasRenderingContext2D, size: Point, rgb: readonly number[]): void => {
+export const recolorMask = (ctx: CanvasRenderingContext2D, size: Point, rgb: Rgb): void => {
     const imageData = ctx.getImageData(0, 0, size.x, size.y);
     const data = imageData.data;
 

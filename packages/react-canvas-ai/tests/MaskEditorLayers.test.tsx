@@ -1,13 +1,13 @@
+import type { ComponentProps } from 'react';
 import { render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import { MaskEditorLayers, maskEditorLayerStyles } from '../src/components/MaskEditorLayers';
-import { MaskEditorProvider } from '../src/components/MaskEditorProvider';
+import { MaskEditorLayers, MaskEditorProvider, maskEditorLayerStyles } from '../src';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC } from './helpers/image';
 
 installImageMock({ width: 400, height: 200 });
 
-const renderLayers = (props: Partial<React.ComponentProps<typeof MaskEditorProvider>> = {}) =>
+const renderLayers = (props: Partial<ComponentProps<typeof MaskEditorProvider>> = {}) =>
     render(
         <MaskEditorProvider src={SRC} onDrawingChange={vi.fn()} {...props}>
             <MaskEditorLayers />

@@ -54,15 +54,16 @@ export type BrushCursorOptions = {
     paintDab: (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
 };
 
-/** Tracks the pointer over the cursor layer, painting the mask while a button is held. */
-export const useBrushCursor = (
-    cursorCanvasRef: RefObject<HTMLCanvasElement | null>,
-    options: BrushCursorOptions,
-): void => {
+/**
+ * Tracks the pointer over the cursor layer, painting the mask while a button is held.
+ *
+ * Keyed on the element, so a cursor layer that mounts conditionally still gets its listener —
+ * keyed on a ref object this attached once at mount and never noticed a later arrival.
+ */
+export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, options: BrushCursorOptions): void => {
     const optionsRef = useLatest(options);
 
     useEffect(() => {
-        const cursorCanvas = cursorCanvasRef.current;
         if (!cursorCanvas) return;
 
         const handleMouseMove = (evt: MouseEvent) => {
@@ -78,7 +79,7 @@ export const useBrushCursor = (
 
         cursorCanvas.addEventListener('mousemove', handleMouseMove);
         return () => cursorCanvas.removeEventListener('mousemove', handleMouseMove);
-    }, [cursorCanvasRef]);
+    }, [cursorCanvas]);
 };
 
 export type BrushSizeWheelOptions = {
@@ -93,21 +94,23 @@ export type BrushSizeWheelOptions = {
 
 /** Resizes the brush on a plain wheel. Ctrl/meta is the zoom gesture and is left alone. */
 export const useBrushSizeWheel = (
-    cursorCanvasRef: RefObject<HTMLCanvasElement | null>,
+    cursorCanvas: HTMLCanvasElement | undefined,
     options: BrushSizeWheelOptions,
 ): void => {
     const optionsRef = useLatest(options);
-    const { enabled } = options;
 
     useEffect(() => {
-        const cursorCanvas = cursorCanvasRef.current;
-        if (!enabled || !cursorCanvas) return;
+        if (!cursorCanvas) return;
 
         const handleWheel = (evt: WheelEvent) => {
-            if (evt.ctrlKey || evt.metaKey) return;
-
-            const { paintCursor, getImageCoordinates, cursorSizeRef, setCursorSize, onCursorSizeChange } =
+            const { enabled, paintCursor, getImageCoordinates, cursorSizeRef, setCursorSize, onCursorSizeChange } =
                 optionsRef.current;
+
+            // Gated here rather than around the listener, so toggling the prop does not
+            // detach and reattach. Returning before `preventDefault` leaves the event to
+            // propagate exactly as it did when no listener was registered at all.
+            if (!enabled) return;
+            if (evt.ctrlKey || evt.metaKey) return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
             const newSize = Math.max(1, cursorSizeRef.current + (evt.deltaY > 0 ? -1 : 1));
@@ -125,5 +128,5 @@ export const useBrushSizeWheel = (
 
         cursorCanvas.addEventListener('wheel', handleWheel, { passive: false });
         return () => cursorCanvas.removeEventListener('wheel', handleWheel);
-    }, [cursorCanvasRef, enabled]);
+    }, [cursorCanvas]);
 };

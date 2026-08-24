@@ -1,3 +1,4 @@
+import { useLayoutEffect } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZoomPanOptions } from '../src/hooks/useZoomPan';
@@ -26,10 +27,16 @@ const mountContainer = (width = 200, height = 200) => {
     return el;
 };
 
-const setup = (options: ZoomPanOptions = {}, contentSize = CONTENT) => {
-    const ref = { current: container } as React.RefObject<HTMLDivElement | null>;
-    return renderHook(() => useZoomPan(ref, contentSize, options));
-};
+/**
+ * `useZoomPan` learns about its container through the attach function it returns, so the
+ * harness has to install it exactly as a component's `ref` would.
+ */
+const setup = (options: ZoomPanOptions = {}, contentSize = CONTENT) =>
+    renderHook(() => {
+        const [state, actions, attach] = useZoomPan(contentSize, options);
+        useLayoutEffect(() => attach(container), [attach]);
+        return [state, actions] as const;
+    });
 
 /** Let a coalesced rAF pan commit land. */
 const flushFrame = () => act(async () => void (await new Promise(requestAnimationFrame)));
@@ -63,6 +70,25 @@ describe('base scale', () => {
     it('honours initialScale', () => {
         const { result } = setup({ initialScale: 2 });
         expect(result.current[0].scale).toBe(2);
+    });
+
+    it('leaves an initialScale above 1 pannable after the mount fit', () => {
+        // `scale` and `transform.scale` used to be separate state, and the mount fit wrote the
+        // transform without touching the shadow: the editor rendered at 2x but reported a
+        // transform scale of 1, so nothing would pan and Space did nothing.
+        const { result } = setup({ initialScale: 2 });
+
+        expect(result.current[0].transform.scale).toBe(2);
+
+        act(() => {
+            window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space' }));
+        });
+        expect(result.current[0].isSpaceKeyDown).toBe(true);
+
+        act(() => {
+            container.dispatchEvent(new MouseEvent('mousedown', { button: 1, bubbles: true }));
+        });
+        expect(result.current[0].isPanning).toBe(true);
     });
 });
 
@@ -105,7 +131,24 @@ describe('zoom actions', () => {
 
         expect(result.current[0].scale).toBe(1);
         expect(result.current[0].transform).toEqual({ scale: 1, translateX: 0, translateY: 0 });
+        expect(onScaleChange).toHaveBeenLastCalledWith(1);
+        // The pan never left the centre, so there was no pan change to report. Notifications
+        // are diff-based: a reset announces only what it actually moved.
+        expect(onPanChange).not.toHaveBeenCalled();
+    });
+
+    it('resetZoom reports the pan it actually undoes', () => {
+        const onPanChange = vi.fn();
+        const { result } = setup({ onPanChange });
+
+        zoomInto(result);
+        act(() => result.current[1].setPan(40, -30));
+        onPanChange.mockClear();
+
+        act(() => result.current[1].resetZoom());
+
         expect(onPanChange).toHaveBeenCalledWith(0, 0);
+        expect(result.current[0].transform).toEqual({ scale: 1, translateX: 0, translateY: 0 });
     });
 });
 
@@ -247,8 +290,7 @@ describe('getImageCoordinates', () => {
     });
 
     it('returns the origin without a container', () => {
-        const ref = { current: null } as React.RefObject<HTMLDivElement | null>;
-        const { result } = renderHook(() => useZoomPan(ref, CONTENT));
+        const { result } = renderHook(() => useZoomPan(CONTENT));
         expect(result.current[1].getImageCoordinates(0, 0)).toEqual({ x: 0, y: 0 });
     });
 
@@ -526,10 +568,14 @@ describe('container resize', () => {
         };
 
         try {
-            const ref = { current: container } as React.RefObject<HTMLDivElement | null>;
-            const { result, rerender } = renderHook(({ content }) => useZoomPan(ref, content), {
-                initialProps: { content: { x: 100, y: 100 } },
-            });
+            const { result, rerender } = renderHook(
+                ({ content }) => {
+                    const [state, actions, attach] = useZoomPan(content);
+                    useLayoutEffect(() => attach(container), [attach]);
+                    return [state, actions] as const;
+                },
+                { initialProps: { content: { x: 100, y: 100 } } },
+            );
             expect(result.current[0].baseScale).toBe(1);
 
             rerender({ content: { x: 400, y: 400 } });
@@ -545,6 +591,42 @@ describe('container resize', () => {
         } finally {
             globalThis.ResizeObserver = original;
         }
+    });
+});
+
+describe('container attachment', () => {
+    /**
+     * The attach function is a ref callback, so any unstable dependency reachable from it makes
+     * React detach and reattach the element on every render — tearing down the ResizeObserver
+     * and re-running the initial fit each time. Guarded here because the symptom is a silent
+     * performance and correctness leak rather than a failure.
+     */
+    it('attaches the container exactly once across rerenders and a zoom across 1', () => {
+        const observe = vi.spyOn(globalThis.ResizeObserver.prototype, 'observe');
+        const { result, rerender } = setup();
+
+        expect(observe).toHaveBeenCalledTimes(1);
+
+        rerender();
+        rerender();
+        expect(observe).toHaveBeenCalledTimes(1);
+
+        // Crossing scale 1 in both directions used to gate the container's pan listeners, so
+        // doing it through the ref callback would have re-registered everything.
+        zoomInto(result);
+        act(() => result.current[1].resetZoom());
+        rerender();
+
+        expect(observe).toHaveBeenCalledTimes(1);
+    });
+
+    it('detaches when the element goes away', () => {
+        const disconnect = vi.spyOn(globalThis.ResizeObserver.prototype, 'disconnect');
+        const { unmount } = setup();
+
+        unmount();
+
+        expect(disconnect).toHaveBeenCalled();
     });
 });
 

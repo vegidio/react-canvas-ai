@@ -1,4 +1,4 @@
-import type { CSSProperties, FC } from 'react';
+import type { CSSProperties, ReactElement } from 'react';
 import { useMaskEditorContext } from './MaskEditorProvider';
 
 /**
@@ -63,7 +63,7 @@ export type MaskEditorLayersProps = {
 };
 
 /** Renders the canvas stack from `MaskEditorProvider`'s context. */
-export const MaskEditorLayers: FC<MaskEditorLayersProps> = ({ baseKey, cursor = 'default' }) => {
+export const MaskEditorLayers = ({ baseKey, cursor = 'default' }: MaskEditorLayersProps): ReactElement => {
     const {
         canvasRef,
         maskCanvasRef,

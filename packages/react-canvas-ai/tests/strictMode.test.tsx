@@ -1,8 +1,7 @@
-import { StrictMode } from 'react';
+import { type ComponentProps, StrictMode } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
-import { MaskEditor } from '../src/components/MaskEditor';
+import { MaskEditor, type MaskEditorCanvasRef } from '../src';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC, settle } from './helpers/image';
 
@@ -16,12 +15,12 @@ beforeEach(() => {
 
 installImageMock({ width: 400, height: 200 });
 
-const renderEditor = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
+const renderEditor = (props: Partial<ComponentProps<typeof MaskEditor>> = {}) => {
     const api: { current: MaskEditorCanvasRef | null } = { current: null };
 
     const utils = render(
         <StrictMode>
-            <MaskEditor src={SRC} onDrawingChange={vi.fn()} {...props} canvasRef={api} />
+            <MaskEditor src={SRC} onDrawingChange={vi.fn()} {...props} ref={api} />
         </StrictMode>,
     );
 

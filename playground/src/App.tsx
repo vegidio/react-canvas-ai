@@ -87,7 +87,7 @@ const App = () => {
                             maskColor={color}
                             cursorSize={size}
                             onCursorSizeChange={setSize}
-                            canvasRef={canvas}
+                            ref={canvas}
                             maskOpacity={0.5}
                             onDrawingChange={setDrawing}
                             onMaskChange={setMask}

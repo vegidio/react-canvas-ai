@@ -1,4 +1,4 @@
-import type { CSSProperties, FC, Ref } from 'react';
+import type { CSSProperties, ReactElement, Ref } from 'react';
 import { useId, useImperativeHandle, useMemo } from 'react';
 import type { MaskEditorCanvasRef, UseMaskEditorProps } from '../hooks/useMaskEditor';
 import { useMaskEditor } from '../hooks/useMaskEditor';
@@ -8,7 +8,12 @@ import { maskEditorLayerStyles } from './MaskEditorLayers';
 export type { MaskEditorCanvasRef };
 
 export type MaskEditorProps = UseMaskEditorProps & {
-    canvasRef?: Ref<MaskEditorCanvasRef>;
+    /**
+     * The editor's imperative handle. React 19 passes `ref` as an ordinary prop, so this is
+     * the standard spelling that DevTools and `ComponentProps` inference recognise — it was
+     * `canvasRef` while the package still supported React 18.
+     */
+    ref?: Ref<MaskEditorCanvasRef>;
     /** Appended to the root element's own class name. */
     className?: string;
     /** Merged over the root element's built-in layout styles. */
@@ -56,9 +61,7 @@ const containerStyle: CSSProperties = {
     overflow: 'hidden',
 };
 
-export const MaskEditor: FC<MaskEditorProps> = (props) => {
-    const { canvasRef: externalMaskCanvasRef, className, style, ...hookProps } = props;
-
+export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorProps): ReactElement => {
     const {
         canvasRef,
         clear,
@@ -93,7 +96,7 @@ export const MaskEditor: FC<MaskEditorProps> = (props) => {
 
     // Expose API via ref if provided
     useImperativeHandle(
-        externalMaskCanvasRef,
+        ref,
         () => ({
             get maskCanvas() {
                 return maskCanvasRef.current ?? undefined;
@@ -160,8 +163,8 @@ export const MaskEditor: FC<MaskEditorProps> = (props) => {
             data-mask-editor-id={uniqueId}
             style={{
                 ...outerStyle,
-                maxWidth: props.maxWidth ? `${props.maxWidth}px` : undefined,
-                maxHeight: props.maxHeight ? `${props.maxHeight}px` : undefined,
+                maxWidth: hookProps.maxWidth ? `${hookProps.maxWidth}px` : undefined,
+                maxHeight: hookProps.maxHeight ? `${hookProps.maxHeight}px` : undefined,
                 ...style,
             }}
         >

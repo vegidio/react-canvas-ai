@@ -6,9 +6,10 @@ export type KeyboardScope = 'window' | 'container';
  * the way.
  */
 export const isFormField = (target: EventTarget | null): boolean => {
-    const el = target as HTMLElement | null;
-    const tag = el?.tagName;
-    return tag === 'INPUT' || tag === 'TEXTAREA' || Boolean(el?.isContentEditable);
+    // `instanceof` rather than a cast: an `EventTarget` is just as likely to be `window` or
+    // `document`, neither of which has a `tagName` to read.
+    if (!(target instanceof HTMLElement)) return false;
+    return target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable;
 };
 
 /**

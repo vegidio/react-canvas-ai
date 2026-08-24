@@ -6,9 +6,13 @@ const MaskEditorCanvas = () => {
     // MaskEditorLayers rather than three hand-rolled canvases: the stacking, z-order,
     // pointer-events and blend-mode contract lives in the package, so this example cannot
     // drift out of sync with it.
-    const { size } = useMaskEditorContext();
+    // `containerProps` has to be spread onto the element wrapping the stack: it carries the
+    // ref the zoom/pan wiring attaches to, plus the focus and keyboard behaviour. Without it
+    // the editor never measures itself, so wheel zoom and panning do nothing and every brush
+    // dab lands at image coordinate (0, 0).
+    const { size, containerProps } = useMaskEditorContext();
     return (
-        <div style={{ position: 'relative', width: size.x, height: size.y }}>
+        <div {...containerProps} style={{ position: 'relative', width: size.x, height: size.y }}>
             <MaskEditorLayers />
         </div>
     );

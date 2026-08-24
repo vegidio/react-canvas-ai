@@ -15,8 +15,11 @@ export type UseImageLoaderReturn = {
 /**
  * Owns the `src` -> decoded image -> canvas size pipeline.
  *
- * Load and fit are separate effects so that changing `maxWidth`/`maxHeight` re-fits the
- * image already in hand rather than refetching it.
+ * Only the load is an effect. The size is a pure function of the image and the configured
+ * bounds, so it is derived during render — as a second effect, changing `maxWidth`/`maxHeight`
+ * rendered once at the old size before correcting itself. Deriving also keeps the original
+ * reason the two were split: a bounds change re-fits the image already in hand rather than
+ * refetching it.
  */
 export const useImageLoader = (
     src: string,
@@ -25,7 +28,7 @@ export const useImageLoader = (
     crossOrigin?: string,
 ): UseImageLoaderReturn => {
     const [image, setImage] = useState<HTMLImageElement | undefined>(undefined);
-    const [size, setSize] = useState<Point>({ x: 0, y: 0 });
+    const [failed, setFailed] = useState(false);
     const [key, setKey] = useState(0);
 
     useEffect(() => {
@@ -40,13 +43,14 @@ export const useImageLoader = (
             .then((loaded) => {
                 if (cancelled) return;
                 setImage(loaded);
+                setFailed(false);
                 setKey((previous) => previous + 1);
             })
             .catch(() => {
                 if (cancelled) return;
                 // Keep the editor visible so the failure is obvious in place.
                 setImage(undefined);
-                setSize({ ...FALLBACK_SIZE });
+                setFailed(true);
             });
 
         return () => {
@@ -55,10 +59,10 @@ export const useImageLoader = (
         };
     }, [src, crossOrigin]);
 
-    useEffect(() => {
-        if (!image) return;
-        setSize(computeTargetSize(image, maxWidth, maxHeight));
-    }, [image, maxWidth, maxHeight]);
+    const size = useMemo<Point>(() => {
+        if (image) return computeTargetSize(image, maxWidth, maxHeight);
+        return failed ? { ...FALLBACK_SIZE } : { x: 0, y: 0 };
+    }, [image, failed, maxWidth, maxHeight]);
 
     return useMemo(() => ({ image, size, key }), [image, size, key]);
 };

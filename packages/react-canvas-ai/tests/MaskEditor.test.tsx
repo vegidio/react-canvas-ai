@@ -1,15 +1,13 @@
-import { createRef } from 'react';
+import { type ComponentProps, createRef } from 'react';
 import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
-import type { MaskEditorCanvasRef } from '../src/components/MaskEditor';
-import { MaskEditor } from '../src/components/MaskEditor';
-import { MaskEditorDefaults } from '../src/internal/defaults';
+import { MaskEditor, type MaskEditorCanvasRef, MaskEditorDefaults } from '../src';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC } from './helpers/image';
 
 installImageMock({ width: 400, height: 200 });
 
-const renderEditor = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
+const renderEditor = (props: Partial<ComponentProps<typeof MaskEditor>> = {}) => {
     const onDrawingChange = vi.fn();
     const utils = render(<MaskEditor src={SRC} onDrawingChange={onDrawingChange} {...props} />);
     const root = utils.container.querySelector('.react-mask-editor-outer') as HTMLElement;
@@ -125,7 +123,7 @@ describe('props', () => {
         expect(root.style.flexDirection).toBe('column');
     });
 
-    it('renders without a canvasRef', () => {
+    it('renders without a ref', () => {
         expect(() => renderEditor()).not.toThrow();
     });
 });
@@ -133,7 +131,7 @@ describe('props', () => {
 describe('imperative ref', () => {
     it('exposes the documented surface', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        renderEditor({ canvasRef: ref });
+        renderEditor({ ref });
 
         expect(ref.current).not.toBeNull();
         for (const method of ['undo', 'redo', 'clear', 'resetZoom', 'setPan', 'zoomIn', 'zoomOut'] as const) {
@@ -145,7 +143,7 @@ describe('imperative ref', () => {
     // painting style to match it; before this they had to be handed the same props twice.
     it('reports the active style, defaulting to MaskEditorDefaults', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        renderEditor({ canvasRef: ref });
+        renderEditor({ ref });
 
         expect(ref.current?.maskColor).toBe(MaskEditorDefaults.maskColor);
         expect(ref.current?.maskOpacity).toBe(MaskEditorDefaults.maskOpacity);
@@ -155,13 +153,13 @@ describe('imperative ref', () => {
 
     it('tracks style prop changes without remounting', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        const { rerender } = renderEditor({ canvasRef: ref });
+        const { rerender } = renderEditor({ ref });
 
         rerender(
             <MaskEditor
                 src={SRC}
                 onDrawingChange={vi.fn()}
-                canvasRef={ref}
+                ref={ref}
                 maskColor='#ff0000'
                 maskOpacity={0.9}
                 maskBlendMode='multiply'
@@ -180,10 +178,10 @@ describe('imperative ref', () => {
     // brush size alone changes on every wheel tick.
     it('keeps the handle identity stable across style changes', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        const { rerender } = renderEditor({ canvasRef: ref });
+        const { rerender } = renderEditor({ ref });
         const handle = ref.current;
 
-        rerender(<MaskEditor src={SRC} onDrawingChange={vi.fn()} canvasRef={ref} maskColor='#00ff00' cursorSize={7} />);
+        rerender(<MaskEditor src={SRC} onDrawingChange={vi.fn()} ref={ref} maskColor='#00ff00' cursorSize={7} />);
 
         expect(ref.current).toBe(handle);
         expect(ref.current?.maskColor).toBe('#00ff00');
@@ -192,7 +190,7 @@ describe('imperative ref', () => {
 
     it('resolves maskCanvas to the live mask element', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        const { root } = renderEditor({ canvasRef: ref });
+        const { root } = renderEditor({ ref });
 
         // Previously this snapshotted `null` at handle-creation time and never updated,
         // because the dep array only listed the (stable) ref object.
@@ -201,7 +199,7 @@ describe('imperative ref', () => {
 
     it('methods are callable without throwing', () => {
         const ref = createRef<MaskEditorCanvasRef>();
-        renderEditor({ canvasRef: ref });
+        renderEditor({ ref });
 
         expect(() => {
             ref.current?.zoomIn();
@@ -220,7 +218,7 @@ describe('keyboardScope', () => {
 
     const innerOf = (el: HTMLElement) => el.querySelector('.react-mask-editor-inner') as HTMLElement;
 
-    const renderPair = (props: Partial<React.ComponentProps<typeof MaskEditor>> = {}) => {
+    const renderPair = (props: Partial<ComponentProps<typeof MaskEditor>> = {}) => {
         const first = vi.fn();
         const second = vi.fn();
         const utils = render(

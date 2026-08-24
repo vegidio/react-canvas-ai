@@ -1,12 +1,13 @@
-import type { RefObject } from 'react';
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
+import type { ZoomPanAction } from '../internal/zoomPanReducer';
 import { acquireBodyPanCursor } from '../internal/bodyPanCursor';
 import { MaskEditorDefaults } from '../internal/defaults';
 import { calculateBaseScale, clampPan, toImageCoordinates } from '../internal/geometry';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { useEventCallback, useLatest } from '../internal/useLatest';
+import { createZoomPanState, zoomPanReducer } from '../internal/zoomPanReducer';
 
 /** How far a single zoomIn/zoomOut step moves the scale. */
 const ZOOM_STEP = 0.2;
@@ -36,10 +37,7 @@ export type ZoomPanState = {
 };
 
 export type ZoomPanActions = {
-    /**
-     * Sets the zoom, clamped to `[minScale, maxScale]`. Moves the transform with it — the raw
-     * state dispatch this replaced left them disagreeing.
-     */
+    /** Sets the zoom, clamped to `[minScale, maxScale]`. */
     setScale: (scale: number) => void;
     resetZoom: () => void;
     setPan: (x: number, y: number) => void;
@@ -48,13 +46,20 @@ export type ZoomPanActions = {
     zoomOut: () => void;
 };
 
-const CENTERED: Transform = { scale: 1, translateX: 0, translateY: 0 };
+/**
+ * Installs the hook on the container. Returns the detach cleanup, so it is usable directly as
+ * a React 19 ref callback.
+ *
+ * The hook has to own the element rather than be handed a ref object: a ref object notifies
+ * nobody, so every element-scoped listener attached once at mount against whatever happened to
+ * be there and could never notice a container that arrived late or was replaced.
+ */
+export type ZoomPanAttach = (node: HTMLDivElement) => () => void;
 
 export const useZoomPan = (
-    containerRef: RefObject<HTMLDivElement | null>,
     contentSize: Point,
     options: ZoomPanOptions = {},
-): [ZoomPanState, ZoomPanActions] => {
+): [ZoomPanState, ZoomPanActions, ZoomPanAttach] => {
     const {
         initialScale = MaskEditorDefaults.scale,
         minScale = MaskEditorDefaults.minScale,
@@ -71,28 +76,52 @@ export const useZoomPan = (
     const notifyScaleChange = useEventCallback<[number]>(onScaleChange);
     const notifyPanChange = useEventCallback<[number, number]>(onPanChange);
 
-    const [scale, setScaleState] = useState(initialScale);
-    const [transform, setTransform] = useState<Transform>({
-        scale: initialScale,
-        translateX: 0,
-        translateY: 0,
+    // Written by `attach` below. Reading the element through a ref rather than taking it as a
+    // value keeps `readRect`, `setPan` and `getImageCoordinates` on stable identities.
+    const elementRef = useRef<HTMLDivElement | null>(null);
+
+    const [internal, dispatch] = useReducer(zoomPanReducer, initialScale, createZoomPanState);
+
+    // One mirror for the whole state, read by every event handler and observer below so their
+    // effects can attach exactly once instead of closing over rendered values.
+    const stateRef = useRef(internal);
+
+    /**
+     * The single write path. Runs the reducer eagerly against the mirror before dispatching,
+     * because two actions in the same tick must each see the other's result — `flushPan` then
+     * `stopPanning`, or `zoomIn` then `resetZoom` — and React does not apply a dispatch until
+     * it re-renders.
+     *
+     * Notifications live here rather than in the reducer: React re-runs the reducer on an
+     * eager bailout and again under StrictMode, so it has to stay pure.
+     */
+    const commit = useCallback(
+        (action: ZoomPanAction) => {
+            const previous = stateRef.current;
+            const next = zoomPanReducer(previous, action);
+            // The reducer returns the same object when nothing moved, which is the guard each
+            // action used to repeat by hand. Bail before React even schedules a render.
+            if (next === previous) return;
+
+            stateRef.current = next;
+            dispatch(action);
+
+            if (next.transform.scale !== previous.transform.scale) notifyScaleChange(next.transform.scale);
+            if (
+                next.transform.translateX !== previous.transform.translateX ||
+                next.transform.translateY !== previous.transform.translateY
+            ) {
+                notifyPanChange(next.transform.translateX, next.transform.translateY);
+            }
+        },
+        [notifyScaleChange, notifyPanChange],
+    );
+
+    // Backstop only: `commit` has already written the mirror. This re-syncs it to whatever
+    // React actually committed.
+    useLayoutEffect(() => {
+        stateRef.current = internal;
     });
-    const [baseScale, setBaseScale] = useState(1);
-
-    const [isPanning, setIsPanning] = useState(false);
-    const [isSpaceKeyDown, setIsSpaceKeyDown] = useState(false);
-    const [isZoomKeyDown, setIsZoomKeyDown] = useState(false);
-
-    // Mirrors of the state above. Event handlers and observers read these instead of closing
-    // over the rendered values, which is what lets their effects attach exactly once.
-    // Every write goes through `commitScale`/`commitTransform`, which update the ref eagerly;
-    // `useLatest` re-syncs on commit as a backstop.
-    const scaleRef = useLatest(scale);
-    const transformRef = useLatest(transform);
-    const baseScaleRef = useLatest(baseScale);
-    const isPanningRef = useRef(false);
-    const isSpaceKeyDownRef = useRef(false);
-    const isZoomKeyDownRef = useRef(false);
 
     // Never rendered, so this is deliberately not state: as state it put every pan listener
     // back on the element on every single mousemove.
@@ -104,25 +133,6 @@ export const useZoomPan = (
     // `undefined` until the first successful fit, which is what makes that first fit unconditional.
     const lastContentSizeRef = useRef<Point | undefined>(undefined);
 
-    // Single write paths. Updating the ref eagerly means two actions in the same tick see
-    // each other's result, and keeps side effects out of the state updaters entirely.
-    const commitScale = useCallback((next: number) => {
-        scaleRef.current = next;
-        setScaleState(next);
-    }, []);
-
-    const commitTransform = useCallback((next: Transform) => {
-        transformRef.current = next;
-        setTransform(next);
-    }, []);
-
-    const setPanning = useCallback((next: boolean) => {
-        isPanningRef.current = next;
-        setIsPanning(next);
-    }, []);
-
-    const effectiveScale = baseScale * scale;
-
     /**
      * Maps a viewport point into image space against a rect the caller already holds.
      * `getBoundingClientRect` forces a layout read, so anything on a pointer or wheel path
@@ -130,8 +140,10 @@ export const useZoomPan = (
      * {@link getImageCoordinates}.
      */
     const toImageCoordinatesWithRect = useCallback(
-        (clientX: number, clientY: number, rect: DOMRect): Point =>
-            toImageCoordinates(clientX, clientY, rect, contentSize, transformRef.current, baseScaleRef.current),
+        (clientX: number, clientY: number, rect: DOMRect): Point => {
+            const { transform, baseScale } = stateRef.current;
+            return toImageCoordinates(clientX, clientY, rect, contentSize, transform, baseScale);
+        },
         [contentSize],
     );
 
@@ -141,36 +153,28 @@ export const useZoomPan = (
     const cachedRectRef = useRef<DOMRect | undefined>(undefined);
 
     const readRect = useCallback((): DOMRect | undefined => {
-        const container = containerRef.current;
+        const container = elementRef.current;
         if (!container) return undefined;
 
         cachedRectRef.current ??= container.getBoundingClientRect();
         return cachedRectRef.current;
-    }, [containerRef]);
+    }, []);
 
     const invalidateRect = useCallback(() => {
         cachedRectRef.current = undefined;
     }, []);
 
     useEffect(() => {
-        const container = containerRef.current;
-
         // Capture phase: a scroll in any ancestor moves the container, and scroll events
         // from a nested element do not bubble.
         window.addEventListener('scroll', invalidateRect, true);
         window.addEventListener('resize', invalidateRect);
-        // The pointer entering is the gesture boundary: it bounds how long a cached rect can
-        // survive, so a layout shift that moved the container without resizing it — which
-        // neither the ResizeObserver nor a scroll would catch — cannot go unnoticed across
-        // two separate interactions.
-        container?.addEventListener('mouseenter', invalidateRect);
 
         return () => {
             window.removeEventListener('scroll', invalidateRect, true);
             window.removeEventListener('resize', invalidateRect);
-            container?.removeEventListener('mouseenter', invalidateRect);
         };
-    }, [containerRef, invalidateRect]);
+    }, [invalidateRect]);
 
     const getImageCoordinates = useCallback(
         (clientX: number, clientY: number): Point => {
@@ -184,41 +188,19 @@ export const useZoomPan = (
 
     /** Re-fits the content to the container and recentres it. */
     const recalculateBaseScaleAndCenter = useCallback(() => {
-        const container = containerRef.current;
+        const container = elementRef.current;
         if (!container || contentSize.x === 0 || contentSize.y === 0) return;
 
         lastContentSizeRef.current = { ...contentSize };
 
         // Once: each call forces a style recalc via `getComputedStyle`.
-        const nextBaseScale = calculateBaseScale(container, contentSize);
-        setBaseScale(nextBaseScale);
-        baseScaleRef.current = nextBaseScale;
-        commitTransform({ ...CENTERED });
-
-        notifyScaleChange(1);
-        notifyPanChange(0, 0);
-    }, [containerRef, contentSize, commitTransform, notifyScaleChange, notifyPanChange]);
+        commit({ type: 'fit', baseScale: calculateBaseScale(container, contentSize) });
+    }, [contentSize, commit]);
 
     const recalculateRef = useLatest(recalculateBaseScaleAndCenter);
 
-    useEffect(() => {
-        const container = containerRef.current;
-        if (!container) return;
-
-        // Read through the ref: closing over `recalculate` directly meant that after the
-        // first resize the observer kept re-fitting to the *original* content size.
-        const observer = new ResizeObserver(() => {
-            cachedRectRef.current = undefined;
-            lastContentSizeRef.current = undefined;
-            recalculateRef.current();
-        });
-
-        observer.observe(container);
-        return () => observer.disconnect();
-    }, [containerRef]);
-
     useLayoutEffect(() => {
-        if (!containerRef.current || contentSize.x === 0 || contentSize.y === 0) return;
+        if (!elementRef.current || contentSize.x === 0 || contentSize.y === 0) return;
 
         const last = lastContentSizeRef.current;
         const moved =
@@ -227,7 +209,7 @@ export const useZoomPan = (
             Math.abs(last.y - contentSize.y) > REFIT_THRESHOLD;
 
         if (moved) recalculateBaseScaleAndCenter();
-    }, [containerRef, contentSize, recalculateBaseScaleAndCenter]);
+    }, [contentSize, recalculateBaseScaleAndCenter]);
 
     /** Zooms so the content under the cursor stays under the cursor. */
     const zoomToPoint = useCallback(
@@ -236,28 +218,28 @@ export const useZoomPan = (
 
             const cursorOffsetX = pointX - rect.width / 2;
             const cursorOffsetY = pointY - rect.height / 2;
-            const newCombinedScale = baseScaleRef.current * newScale;
+            const newCombinedScale = stateRef.current.baseScale * newScale;
 
             const translateX = -((under.x - contentSize.x / 2) * newCombinedScale - cursorOffsetX) / newCombinedScale;
             const translateY = -((under.y - contentSize.y / 2) * newCombinedScale - cursorOffsetY) / newCombinedScale;
 
-            commitScale(newScale);
-            commitTransform({ scale: newScale, translateX, translateY });
-
-            notifyScaleChange(newScale);
-            notifyPanChange(translateX, translateY);
+            commit({ type: 'zoomToPoint', scale: newScale, translateX, translateY });
         },
-        [contentSize, toImageCoordinatesWithRect, commitScale, commitTransform, notifyScaleChange, notifyPanChange],
+        [contentSize, toImageCoordinatesWithRect, commit],
     );
 
     const zoomToPointRef = useLatest(zoomToPoint);
     const keyboardScopeRef = useLatest(keyboardScope);
 
-    useEffect(() => {
-        const container = containerRef.current;
-        if (!enableWheelZoom || !container) return;
+    // Read through a ref so changing any of them does not re-register the listener, which
+    // would mean detaching and reattaching the container.
+    const wheelConfigRef = useLatest({ enableWheelZoom, minScale, maxScale });
 
-        const handleWheel = (e: WheelEvent) => {
+    const handleWheel = useCallback(
+        (e: WheelEvent) => {
+            const { enableWheelZoom: enabled, minScale: min, maxScale: max } = wheelConfigRef.current;
+            if (!enabled) return;
+
             // A plain wheel belongs to the brush-size handler.
             if (!e.ctrlKey && !e.metaKey) return;
             e.preventDefault();
@@ -265,69 +247,41 @@ export const useZoomPan = (
             const rect = readRect();
             if (!rect) return;
 
-            const current = scaleRef.current;
-            const newScale = Math.max(minScale, Math.min(maxScale, current - e.deltaY * 0.01));
+            const current = stateRef.current.transform.scale;
+            const newScale = Math.max(min, Math.min(max, current - e.deltaY * 0.01));
 
             if (newScale !== current) {
                 zoomToPointRef.current(newScale, e.clientX - rect.left, e.clientY - rect.top, rect);
             }
-        };
-
-        container.addEventListener('wheel', handleWheel, { passive: false });
-        return () => container.removeEventListener('wheel', handleWheel);
-    }, [containerRef, enableWheelZoom, minScale, maxScale, readRect]);
-
-    /**
-     * Steps the zoom. Both the scale and the transform are written synchronously: deferring
-     * the transform into a `setTimeout` from inside the `setScale` updater used to let a
-     * stale zoom overwrite an intervening `resetZoom`, and double-fired under StrictMode.
-     */
-    const stepZoom = useCallback(
-        (delta: number) => {
-            const current = scaleRef.current;
-            const newScale = Math.max(minScale, Math.min(maxScale, current + delta));
-            if (newScale === current) return;
-
-            commitScale(newScale);
-            commitTransform({ ...transformRef.current, scale: newScale });
-            notifyScaleChange(newScale);
         },
-        [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
+        [readRect],
     );
 
     const setScale = useCallback(
         (next: number) => {
-            const clamped = Math.max(minScale, Math.min(maxScale, next));
-            if (clamped === scaleRef.current) return;
-
-            commitScale(clamped);
-            commitTransform({ ...transformRef.current, scale: clamped });
-            notifyScaleChange(clamped);
+            commit({ type: 'scale', scale: Math.max(minScale, Math.min(maxScale, next)) });
         },
-        [minScale, maxScale, commitScale, commitTransform, notifyScaleChange],
+        [minScale, maxScale, commit],
+    );
+
+    const stepZoom = useCallback(
+        (delta: number) => {
+            setScale(stateRef.current.transform.scale + delta);
+        },
+        [setScale],
     );
 
     const zoomIn = useCallback(() => stepZoom(ZOOM_STEP), [stepZoom]);
     const zoomOut = useCallback(() => stepZoom(-ZOOM_STEP), [stepZoom]);
 
-    const resetZoom = useCallback(() => {
-        commitScale(1);
-        commitTransform({ ...CENTERED });
-        notifyScaleChange(1);
-        notifyPanChange(0, 0);
-    }, [commitScale, commitTransform, notifyScaleChange, notifyPanChange]);
+    const resetZoom = useCallback(() => commit({ type: 'reset' }), [commit]);
 
     const setPan = useCallback(
         (x: number, y: number) => {
-            const previous = transformRef.current;
-            const constrained = clampPan(x, y, contentSize, constrainPan && Boolean(containerRef.current));
-
-            if (previous.translateX === constrained.x && previous.translateY === constrained.y) return;
-
-            commitTransform({ ...previous, translateX: constrained.x, translateY: constrained.y });
-            notifyPanChange(constrained.x, constrained.y);
+            const constrained = clampPan(x, y, contentSize, constrainPan && Boolean(elementRef.current));
+            commit({ type: 'pan', translateX: constrained.x, translateY: constrained.y });
         },
-        [containerRef, contentSize, constrainPan, commitTransform, notifyPanChange],
+        [contentSize, constrainPan, commit],
     );
 
     const releasePanCursor = useCallback(() => {
@@ -341,43 +295,29 @@ export const useZoomPan = (
     useEffect(() => {
         const handleKeyDown = (e: KeyboardEvent) => {
             if (isFormField(e.target)) return;
-            if (!isKeyboardInScope(keyboardScopeRef.current, containerRef.current)) return;
+            if (!isKeyboardInScope(keyboardScopeRef.current, elementRef.current)) return;
 
             // Space only grabs the pan cursor once there is something to pan.
-            if (e.code === 'Space' && transformRef.current.scale > 1) {
+            if (e.code === 'Space' && stateRef.current.transform.scale > 1) {
                 e.preventDefault();
-                if (!isSpaceKeyDownRef.current) {
-                    isSpaceKeyDownRef.current = true;
-                    setIsSpaceKeyDown(true);
-                }
+                commit({ type: 'spaceKey', value: true });
             }
 
-            if ((e.ctrlKey || e.metaKey) && !isZoomKeyDownRef.current) {
-                isZoomKeyDownRef.current = true;
-                setIsZoomKeyDown(true);
-            }
+            if (e.ctrlKey || e.metaKey) commit({ type: 'zoomKey', value: true });
         };
 
         const handleKeyUp = (e: KeyboardEvent) => {
             if (e.code === 'Space') {
                 e.preventDefault();
-                isSpaceKeyDownRef.current = false;
-                setIsSpaceKeyDown(false);
-                setPanning(false);
+                commit({ type: 'spaceKey', value: false });
+                commit({ type: 'panning', value: false });
             }
 
-            if (!e.ctrlKey && !e.metaKey && isZoomKeyDownRef.current) {
-                isZoomKeyDownRef.current = false;
-                setIsZoomKeyDown(false);
-            }
+            if (!e.ctrlKey && !e.metaKey) commit({ type: 'zoomKey', value: false });
         };
 
         const handleBlur = () => {
-            setPanning(false);
-            isSpaceKeyDownRef.current = false;
-            setIsSpaceKeyDown(false);
-            isZoomKeyDownRef.current = false;
-            setIsZoomKeyDown(false);
+            commit({ type: 'blur' });
             // Losing focus mid-pan used to leave the page stuck on `cursor: grabbing`.
             releasePanCursor();
         };
@@ -391,88 +331,150 @@ export const useZoomPan = (
             window.removeEventListener('keyup', handleKeyUp);
             window.removeEventListener('blur', handleBlur);
         };
-    }, [containerRef, setPanning, releasePanCursor]);
+    }, [commit, releasePanCursor]);
 
-    const canPan = transform.scale > 1;
+    const setPanRef = useLatest(setPan);
 
-    useEffect(() => {
-        const container = containerRef.current;
-        if (!container || !canPan) return;
+    const handlePanMouseDown = useCallback(
+        (e: MouseEvent) => {
+            // Nothing to pan at fit-to-container. Checked here rather than around the listener
+            // so a zoom crossing 1 does not re-register anything on the element.
+            const { transform, isSpaceKeyDown } = stateRef.current;
+            if (transform.scale <= 1) return;
 
-        const handleMouseDown = (e: MouseEvent) => {
             // Middle button, or left button with space held.
-            if (e.button !== 1 && !(e.button === 0 && isSpaceKeyDownRef.current)) return;
+            if (e.button !== 1 && !(e.button === 0 && isSpaceKeyDown)) return;
 
             e.preventDefault();
             lastMousePositionRef.current = { x: e.clientX, y: e.clientY };
             releasePanCursorRef.current = acquireBodyPanCursor();
-            setPanning(true);
-        };
+            commit({ type: 'panning', value: true });
+        },
+        [commit],
+    );
 
-        // Pointer devices deliver moves well above display refresh, and every commit here is
-        // a React state update plus a full re-render of the editor. Coalescing to one commit
-        // per frame drops the redundant renders; the delta is measured from the position at
-        // the last commit, so no movement is lost.
-        //
-        // Only the pan commit is coalesced. The mask-painting path deliberately still paints
-        // per event: one dab per frame would leave visible gaps in a fast stroke.
-        const flushPan = () => {
-            frameRef.current = undefined;
+    // Pointer devices deliver moves well above display refresh, and every commit here is
+    // a React state update plus a full re-render of the editor. Coalescing to one commit
+    // per frame drops the redundant renders; the delta is measured from the position at
+    // the last commit, so no movement is lost.
+    //
+    // Only the pan commit is coalesced. The mask-painting path deliberately still paints
+    // per event: one dab per frame would leave visible gaps in a fast stroke.
+    const flushPan = useCallback(() => {
+        frameRef.current = undefined;
 
-            const pending = pendingPanRef.current;
-            if (!pending || !isPanningRef.current) return;
-            pendingPanRef.current = undefined;
+        const pending = pendingPanRef.current;
+        if (!pending || !stateRef.current.isPanning) return;
+        pendingPanRef.current = undefined;
 
-            const last = lastMousePositionRef.current;
-            const current = transformRef.current;
-            const deltaX = (pending.x - last.x) / current.scale;
-            const deltaY = (pending.y - last.y) / current.scale;
+        const last = lastMousePositionRef.current;
+        const current = stateRef.current.transform;
+        const deltaX = (pending.x - last.x) / current.scale;
+        const deltaY = (pending.y - last.y) / current.scale;
 
-            setPan(current.translateX + deltaX, current.translateY + deltaY);
-            lastMousePositionRef.current = pending;
-        };
+        setPanRef.current(current.translateX + deltaX, current.translateY + deltaY);
+        lastMousePositionRef.current = pending;
+    }, []);
 
-        const handleMouseMove = (e: MouseEvent) => {
-            if (!isPanningRef.current) return;
+    const handlePanMouseMove = useCallback(
+        (e: MouseEvent) => {
+            if (!stateRef.current.isPanning) return;
             e.preventDefault();
 
             pendingPanRef.current = { x: e.clientX, y: e.clientY };
             frameRef.current ??= requestAnimationFrame(flushPan);
-        };
+        },
+        [flushPan],
+    );
 
-        const stopPanning = () => {
-            if (!isPanningRef.current) return;
-            // Land the last move rather than dropping it on the floor.
-            flushPan();
-            setPanning(false);
-            releasePanCursor();
-        };
+    const stopPanning = useCallback(() => {
+        if (!stateRef.current.isPanning) return;
+        // Land the last move rather than dropping it on the floor.
+        flushPan();
+        commit({ type: 'panning', value: false });
+        releasePanCursor();
+    }, [flushPan, commit, releasePanCursor]);
 
-        container.addEventListener('mousedown', handleMouseDown);
-        window.addEventListener('mousemove', handleMouseMove);
+    // Window-scoped, so they belong to the hook's lifetime rather than the element's. The
+    // pending frame is hook state too, which is why its cleanup lives here.
+    useEffect(() => {
+        window.addEventListener('mousemove', handlePanMouseMove);
         window.addEventListener('mouseup', stopPanning);
-        container.addEventListener('mouseleave', stopPanning);
 
         return () => {
+            window.removeEventListener('mousemove', handlePanMouseMove);
+            window.removeEventListener('mouseup', stopPanning);
+
             if (frameRef.current !== undefined) cancelAnimationFrame(frameRef.current);
             frameRef.current = undefined;
             pendingPanRef.current = undefined;
-
-            container.removeEventListener('mousedown', handleMouseDown);
-            window.removeEventListener('mousemove', handleMouseMove);
-            window.removeEventListener('mouseup', stopPanning);
-            container.removeEventListener('mouseleave', stopPanning);
         };
-    }, [containerRef, canPan, setPan, setPanning, releasePanCursor]);
+    }, [handlePanMouseMove, stopPanning]);
 
-    // Nothing to pan once we are back to fit-to-container.
-    useEffect(() => {
-        if (!canPan) setPan(0, 0);
-    }, [canPan, setPan]);
+    /**
+     * Everything that has to be bound to the container itself.
+     *
+     * Stable, so React attaches once and detaches only when the element really goes away.
+     * Anything unstable reachable from here would make React tear the element's wiring down
+     * and rebuild it on every render, re-running the ResizeObserver's initial fit each time.
+     */
+    const attach = useCallback<ZoomPanAttach>(
+        (node) => {
+            elementRef.current = node;
+
+            // A brand new element invalidates everything measured against the old one, and the
+            // fit has to happen here: React attaches refs before layout effects, so this is the
+            // earliest point the container's real size is knowable.
+            cachedRectRef.current = undefined;
+            lastContentSizeRef.current = undefined;
+            recalculateRef.current();
+
+            // Read through the ref: closing over `recalculate` directly meant that after the
+            // first resize the observer kept re-fitting to the *original* content size.
+            const observer = new ResizeObserver(() => {
+                cachedRectRef.current = undefined;
+                lastContentSizeRef.current = undefined;
+                recalculateRef.current();
+            });
+            observer.observe(node);
+
+            // The pointer entering is the gesture boundary: it bounds how long a cached rect can
+            // survive, so a layout shift that moved the container without resizing it — which
+            // neither the ResizeObserver nor a scroll would catch — cannot go unnoticed across
+            // two separate interactions.
+            node.addEventListener('mouseenter', invalidateRect);
+            node.addEventListener('wheel', handleWheel, { passive: false });
+            node.addEventListener('mousedown', handlePanMouseDown);
+            node.addEventListener('mouseleave', stopPanning);
+
+            return () => {
+                // Losing the element mid-pan must not strand the page on `cursor: grabbing`.
+                stopPanning();
+
+                observer.disconnect();
+                node.removeEventListener('mouseenter', invalidateRect);
+                node.removeEventListener('wheel', handleWheel);
+                node.removeEventListener('mousedown', handlePanMouseDown);
+                node.removeEventListener('mouseleave', stopPanning);
+
+                cachedRectRef.current = undefined;
+                elementRef.current = null;
+            };
+        },
+        [invalidateRect, handleWheel, handlePanMouseDown, stopPanning],
+    );
 
     const state = useMemo<ZoomPanState>(
-        () => ({ scale, transform, baseScale, effectiveScale, isPanning, isSpaceKeyDown, isZoomKeyDown }),
-        [scale, transform, baseScale, effectiveScale, isPanning, isSpaceKeyDown, isZoomKeyDown],
+        () => ({
+            scale: internal.transform.scale,
+            transform: internal.transform,
+            baseScale: internal.baseScale,
+            effectiveScale: internal.baseScale * internal.transform.scale,
+            isPanning: internal.isPanning,
+            isSpaceKeyDown: internal.isSpaceKeyDown,
+            isZoomKeyDown: internal.isZoomKeyDown,
+        }),
+        [internal],
     );
 
     const actions = useMemo<ZoomPanActions>(
@@ -482,5 +484,5 @@ export const useZoomPan = (
 
     // No memo around the tuple: it is destructured at the call site, so its identity is
     // never observed.
-    return [state, actions];
+    return [state, actions, attach];
 };

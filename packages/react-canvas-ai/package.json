@@ -64,8 +64,8 @@
         "postpack": "rm -f ./README.md ./LICENSE"
     },
     "peerDependencies": {
-        "react": ">=18.0.0 <20.0.0",
-        "react-dom": ">=18.0.0 <20.0.0"
+        "react": "^19.2.0",
+        "react-dom": "^19.2.0"
     },
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",

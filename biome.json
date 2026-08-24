@@ -35,6 +35,10 @@
                             {
                                 "name": "useLatest",
                                 "stableResult": true
+                            },
+                            {
+                                "name": "useElementRef",
+                                "stableResult": [0]
                             }
                         ]
                     }

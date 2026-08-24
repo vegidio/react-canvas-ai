@@ -1,27 +1,22 @@
-import type {
-    Dispatch,
-    KeyboardEvent as ReactKeyboardEvent,
-    MouseEvent as ReactMouseEvent,
-    RefObject,
-    SetStateAction,
-} from 'react';
+import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefCallback, RefObject } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
-
-export { MaskEditorDefaults } from '../internal/defaults';
-
+import type { ElementHandle } from '../internal/useElementRef';
 import { paintMaskDot, recolorMask } from '../internal/canvas';
 import { MaskEditorDefaults } from '../internal/defaults';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
 import { useBrushCursor, useBrushSizeWheel, useCursorPainter } from '../internal/useBrush';
 import { useCanvas2dContext } from '../internal/useCanvas2dContext';
+import { useElementRef } from '../internal/useElementRef';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 import { hexToRgb, toMask } from '../utils';
 import { useHistory } from './useHistory';
 import { useImageLoader } from './useImageLoader';
 import { useZoomPan } from './useZoomPan';
+
+export { MaskEditorDefaults } from '../internal/defaults';
 
 /** The CSS `mix-blend-mode` values the mask layer supports. */
 export type MaskBlendMode =
@@ -126,7 +121,13 @@ export type { KeyboardScope };
  * work only for the component, because the focus handling lived in its JSX.
  */
 export type MaskEditorContainerProps = {
-    ref: RefObject<HTMLDivElement | null>;
+    /**
+     * A callback ref, not a ref object: the zoom/pan wiring has to be told when the container
+     * attaches. Spread `containerProps` rather than attaching `containerRef` by hand —
+     * `containerRef` is an output, and attaching it instead leaves the editor unable to fit,
+     * zoom or pan.
+     */
+    ref: RefCallback<HTMLDivElement>;
     role: 'application';
     tabIndex: 0;
     onKeyDown: (e: ReactKeyboardEvent) => void;
@@ -134,11 +135,11 @@ export type MaskEditorContainerProps = {
 };
 
 export type UseMaskEditorReturn = {
-    canvasRef: RefObject<HTMLCanvasElement | null>;
+    canvasRef: ElementHandle<HTMLCanvasElement>;
     /** Spread onto the element wrapping the canvas stack. See {@link MaskEditorContainerProps}. */
     containerProps: MaskEditorContainerProps;
     clear: () => void;
-    cursorCanvasRef: RefObject<HTMLCanvasElement | null>;
+    cursorCanvasRef: ElementHandle<HTMLCanvasElement>;
     cursorSize: number;
     handleMouseDown: (e: ReactMouseEvent<HTMLCanvasElement>) => void;
     handleMouseUp: (e: ReactMouseEvent<HTMLCanvasElement>) => void;
@@ -154,11 +155,12 @@ export type UseMaskEditorReturn = {
     isDrawing: boolean;
     key: number;
     maskBlendMode: MaskBlendMode;
-    maskCanvasRef: RefObject<HTMLCanvasElement | null>;
+    maskCanvasRef: ElementHandle<HTMLCanvasElement>;
     maskColor: string;
     maskOpacity: number;
     redo: () => void;
-    setCursorSize: Dispatch<SetStateAction<number>>;
+    /** Sets the brush size in image pixels. */
+    setCursorSize: (size: number) => void;
     size: Point;
     undo: () => void;
     scale: number;
@@ -236,24 +238,35 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         keyboardScope = MaskEditorDefaults.keyboardScope,
     } = props;
 
-    const canvasRef = useRef<HTMLCanvasElement>(null);
-    const maskCanvasRef = useRef<HTMLCanvasElement>(null);
-    const cursorCanvasRef = useRef<HTMLCanvasElement>(null);
+    // Only the mask and cursor layers have hooks subscribing to their element; the base canvas
+    // is painted through its handle, so its element state is deliberately unused. All three stay
+    // the same shape so consumers attach them identically.
+    const [canvasRef] = useElementRef<HTMLCanvasElement>();
+    const [maskCanvasRef, maskCanvas] = useElementRef<HTMLCanvasElement>();
+    const [cursorCanvasRef, cursorCanvas] = useElementRef<HTMLCanvasElement>();
     const containerRef = useRef<HTMLDivElement>(null);
     const initialMaskAppliedRef = useRef<string | undefined>(undefined);
 
     // Only the mask layer is ever read back (history snapshots, recolouring, `toMask`), so it
     // is the only one that wants `willReadFrequently`. The cursor layer is repainted on every
     // pointer move and must stay on the GPU path.
-    const maskContext = useCanvas2dContext(maskCanvasRef, { willReadFrequently: true });
-    const cursorContext = useCanvas2dContext(cursorCanvasRef);
+    const maskContext = useCanvas2dContext(maskCanvas, { willReadFrequently: true });
+    const cursorContext = useCanvas2dContext(cursorCanvas);
 
     const [isDrawing, setIsDrawing] = useState(false);
     const [currentCursorSize, setCursorSize] = useState(initialCursorSize);
 
+    // Adjusting during render rather than in an effect: as an effect, every `cursorSize` prop
+    // change first committed the stale size and only then re-rendered with the new one.
+    const [appliedCursorSizeProp, setAppliedCursorSizeProp] = useState(initialCursorSize);
+    if (appliedCursorSizeProp !== initialCursorSize) {
+        setAppliedCursorSizeProp(initialCursorSize);
+        setCursorSize(initialCursorSize);
+    }
+
     const { image, size, key } = useImageLoader(src, maxWidth, maxHeight, crossOrigin);
 
-    const [zoomPanState, zoomPanActions] = useZoomPan(containerRef, size, {
+    const [zoomPanState, zoomPanActions, attachZoomPan] = useZoomPan(size, {
         initialScale,
         minScale,
         maxScale,
@@ -283,15 +296,14 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
 
     /** Reports the current mask, skipping the pixel work when nobody is listening. */
     const reportMask = useCallback(() => {
-        const canvas = maskCanvasRef.current;
-        if (!canvas || !onMaskChangeRef.current) return;
+        if (!maskCanvas || !onMaskChangeRef.current) return;
 
         try {
-            onMaskChangeRef.current(toMask(canvas));
+            onMaskChangeRef.current(toMask(maskCanvas));
         } catch (error) {
             console.error('[MaskEditor] onMaskChange callback threw:', error);
         }
-    }, []);
+    }, [maskCanvas]);
 
     /**
      * Sizes the three layers and paints the image.
@@ -303,17 +315,21 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     useLayoutEffect(() => {
         if (size.x === 0 || size.y === 0) return;
 
-        for (const ref of [canvasRef, maskCanvasRef, cursorCanvasRef]) {
-            const canvas = ref.current;
-            if (!canvas) continue;
-            canvas.width = size.x;
-            canvas.height = size.y;
+        // Read through the handles rather than depending on the element state: the base canvas
+        // carries `key`, so on a new image React swaps the element in the same commit. Refs are
+        // attached before layout effects, so `.current` is already the canvas that is actually
+        // mounted — whereas the state lags a render, which painted the outgoing element first.
+        for (const layer of [canvasRef, maskCanvasRef, cursorCanvasRef]) {
+            const element = layer.current;
+            if (!element) continue;
+            element.width = size.x;
+            element.height = size.y;
         }
 
-        const canvas = canvasRef.current;
-        if (!image || !canvas) return;
+        const base = canvasRef.current;
+        if (!image || !base) return;
 
-        const ctx = canvas.getContext('2d');
+        const ctx = base.getContext('2d');
         if (!ctx) return;
 
         ctx.clearRect(0, 0, size.x, size.y);
@@ -331,7 +347,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
 
         loadImage(initialMask, { signal: controller.signal })
             .then((img) => {
-                if (controller.signal.aborted || !maskCanvasRef.current) return;
+                if (controller.signal.aborted || !maskCanvas) return;
 
                 maskContext.clearRect(0, 0, size.x, size.y);
                 maskContext.fillStyle = ERASE_COLOR;
@@ -350,11 +366,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             });
 
         return () => controller.abort();
-    }, [initialMask, maskContext, size, reportMask]);
-
-    useEffect(() => {
-        setCursorSize(initialCursorSize);
-    }, [initialCursorSize]);
+    }, [initialMask, maskContext, maskCanvas, size, reportMask]);
 
     // Recolour existing strokes when the mask colour changes. Guarded on the colour actually
     // changing: `recolorMask` walks every pixel, and without this it also ran once at mount
@@ -383,7 +395,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     );
     const paintCursor = useCursorPainter(cursorContext, { size, maskColor, maskOpacity });
 
-    useBrushCursor(cursorCanvasRef, {
+    useBrushCursor(cursorCanvas, {
         paintCursor,
         getImageCoordinates: zoomPanActions.getImageCoordinates,
         cursorSizeRef,
@@ -392,7 +404,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         paintDab,
     });
 
-    useBrushSizeWheel(cursorCanvasRef, {
+    useBrushSizeWheel(cursorCanvas, {
         enabled: Boolean(onCursorSizeChange),
         paintCursor,
         getImageCoordinates: zoomPanActions.getImageCoordinates,
@@ -410,8 +422,9 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             paintDab(x, y, e.nativeEvent);
 
             setIsDrawing(true);
+            notifyDrawingChange(true);
         },
-        [paintDab],
+        [paintDab, notifyDrawingChange],
     );
 
     const handleMouseUp = useCallback(
@@ -422,15 +435,12 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             if (isPanningRef.current || isSpaceKeyDownRef.current) return;
 
             setIsDrawing(false);
+            notifyDrawingChange(false);
             historyRef.current.saveToHistory();
             reportMask();
         },
-        [reportMask],
+        [reportMask, notifyDrawingChange],
     );
-
-    useEffect(() => {
-        notifyDrawingChange(isDrawing);
-    }, [isDrawing, notifyDrawingChange]);
 
     // Report a mid-stroke mask so long strokes are not silent for their whole duration.
     // A plain timer, not a debounce: this fires once when the stroke starts and is cleared
@@ -490,15 +500,34 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         if (keyboardScopeRef.current === 'container') containerRef.current?.focus();
     }, []);
 
+    const setContainer = useCallback<RefCallback<HTMLDivElement>>(
+        (node) => {
+            containerRef.current = node;
+            // Unreachable in React 19, which stops passing `null` once a ref callback returns a
+            // cleanup — but `RefCallback` still types the parameter as nullable for React 18.
+            if (!node) return;
+
+            const detachZoomPan = attachZoomPan(node);
+
+            // Detaching is where the mirror gets cleared, precisely because the `null` call
+            // never comes; without this the ref would keep a detached node alive.
+            return () => {
+                detachZoomPan();
+                containerRef.current = null;
+            };
+        },
+        [attachZoomPan],
+    );
+
     const containerProps = useMemo<MaskEditorContainerProps>(
         () => ({
-            ref: containerRef,
+            ref: setContainer,
             role: 'application',
             tabIndex: 0,
             onKeyDown: handleContainerKeyDown,
             onMouseDown: handleContainerMouseDown,
         }),
-        [handleContainerKeyDown, handleContainerMouseDown],
+        [setContainer, handleContainerKeyDown, handleContainerMouseDown],
     );
 
     return useMemo(
