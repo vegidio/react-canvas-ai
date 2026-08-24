@@ -3,7 +3,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import type { ElementHandle } from '../internal/useElementRef';
-import { paintMaskDot, recolorMask } from '../internal/canvas';
+import { applyMaskImage, paintMaskDot, recolorMask } from '../internal/canvas';
 import { MaskEditorDefaults } from '../internal/defaults';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
@@ -206,9 +206,6 @@ export type MaskEditorCanvasRef = Pick<
     maskCanvas?: HTMLCanvasElement;
 };
 
-/** Painting with the secondary button or shift held erases back to the mask background. */
-const ERASE_COLOR = '#ffffff';
-
 /** How long the mask report waits for the stroke to settle. */
 const MASK_DEBOUNCE_MS = 300;
 
@@ -349,10 +346,11 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             .then((img) => {
                 if (controller.signal.aborted || !maskCanvas) return;
 
-                maskContext.clearRect(0, 0, size.x, size.y);
-                maskContext.fillStyle = ERASE_COLOR;
-                maskContext.fillRect(0, 0, size.x, size.y);
-                maskContext.drawImage(img, 0, 0, size.x, size.y);
+                // Converted, not blitted. `maskColorRef` rather than a `maskColor` dependency, so
+                // a colour change mid-load does not restart the load; the recolour effect has
+                // already committed that same colour, so the two cannot disagree, and any later
+                // change retints these pixels exactly like painted ones.
+                applyMaskImage(maskContext, size, img, hexToRgb(maskColorRef.current));
 
                 // Seed history so undo/redo works from this base state.
                 historyRef.current.saveToHistory();
@@ -368,10 +366,11 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         return () => controller.abort();
     }, [initialMask, maskContext, maskCanvas, size, reportMask]);
 
-    // Recolour existing strokes when the mask colour changes. Guarded on the colour actually
-    // changing: `recolorMask` walks every pixel, and without this it also ran once at mount
-    // against a blank canvas for no visual effect.
-    const appliedMaskColorRef = useRef<string | undefined>(undefined);
+    // Recolour existing strokes when the mask colour changes. Seeded with the mount-time colour
+    // because the canvas starts empty and there is nothing to recolour: starting this at
+    // `undefined` meant `recolorMask` walked every pixel of a blank surface once per mount,
+    // which is exactly what the comment here used to claim it prevented.
+    const appliedMaskColorRef = useRef(maskColor);
     useEffect(() => {
         if (!maskContext || size.x === 0 || size.y === 0) return;
         if (appliedMaskColorRef.current === maskColor) return;
@@ -382,14 +381,15 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
 
     /**
      * Stamps one brush dab for a pointer event. Both the freehand move handler and mousedown
-     * paint identically — the secondary button or shift erases back to the mask background —
-     * so the decision lives here rather than being repeated at each call site.
+     * paint identically — the secondary button or shift erases, taking coverage away rather than
+     * painting a background colour over it — so the decision lives here rather than being
+     * repeated at each call site.
      */
     const paintDab = useCallback(
         (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
             if (!maskContext) return;
-            const color = evt.buttons > 1 || evt.shiftKey ? ERASE_COLOR : maskColorRef.current;
-            paintMaskDot(maskContext, x, y, cursorSizeRef.current, color);
+            const mode = evt.buttons > 1 || evt.shiftKey ? 'erase' : 'paint';
+            paintMaskDot(maskContext, x, y, cursorSizeRef.current, maskColorRef.current, mode);
         },
         [maskContext],
     );

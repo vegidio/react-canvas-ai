@@ -41,6 +41,11 @@ const setup = (props: Partial<UseMaskEditorProps> = {}) => {
     return { ...utils, state, cursorCanvas, onDrawingChange };
 };
 
+const move = (el: HTMLElement, init: MouseEventInit = {}) =>
+    act(() => {
+        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, ...init }));
+    });
+
 describe('late-mounting canvases', () => {
     /**
      * A headless consumer is free to render the canvas stack conditionally. Because the hook
@@ -285,11 +290,6 @@ describe('brush cursor', () => {
         return { mask: vi.spyOn(maskCtx, 'arc'), cursor: vi.spyOn(cursorCtx, 'arc') };
     };
 
-    const move = (el: HTMLElement, init: MouseEventInit = {}) =>
-        act(() => {
-            el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, ...init }));
-        });
-
     it('repaints the brush outline as the pointer moves, without painting the mask', async () => {
         const { cursorCanvas, state } = setup();
         await settle();
@@ -472,6 +472,20 @@ describe('keyboard shortcuts', () => {
 });
 
 describe('initialMask', () => {
+    it('converts the loaded mask instead of blitting it over a white fill', async () => {
+        const fillRect = vi.spyOn(CanvasRenderingContext2D.prototype, 'fillRect');
+        const putImageData = vi.spyOn(CanvasRenderingContext2D.prototype, 'putImageData');
+        remockImage({ width: 100, height: 100 });
+
+        setup({ initialMask: SRC });
+        await settle();
+
+        // The white fill is what made a loaded mask read back as masked everywhere, and made a
+        // later colour change tint the regions that were *not* masked.
+        expect(fillRect).not.toHaveBeenCalled();
+        expect(putImageData).toHaveBeenCalled();
+    });
+
     it('paints the supplied mask onto the mask layer', async () => {
         const drawImage = vi.spyOn(CanvasRenderingContext2D.prototype, 'drawImage');
         setup({ initialMask: SRC });
@@ -518,7 +532,64 @@ describe('unmount safety', () => {
     });
 });
 
+describe('erasing', () => {
+    /**
+     * The composite mode in force at each mask fill. Read after the fact it would always say
+     * `source-over`, because `paintMaskDot` restores what it found.
+     */
+    const modesAtFill = (state: () => ReturnType<typeof useMaskEditor>) => {
+        const ctx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        const seen: string[] = [];
+        vi.spyOn(ctx, 'fill').mockImplementation(() => seen.push(ctx.globalCompositeOperation));
+        return { ctx, seen };
+    };
+
+    it('paints with source-over on a plain drag', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const { seen } = modesAtFill(state);
+
+        move(cursorCanvas(), { buttons: 1 });
+
+        expect(seen).toEqual(['source-over']);
+    });
+
+    it('erases while shift is held', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const { ctx, seen } = modesAtFill(state);
+
+        move(cursorCanvas(), { buttons: 1, shiftKey: true });
+
+        // This used to paint opaque white, which smeared white over the image at `maskOpacity`
+        // instead of revealing it, and still exported as masked.
+        expect(seen).toEqual(['destination-out']);
+        expect(ctx.globalCompositeOperation).toBe('source-over');
+    });
+
+    it('erases with the secondary mouse button', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const { seen } = modesAtFill(state);
+
+        move(cursorCanvas(), { buttons: 2 });
+
+        expect(seen).toEqual(['destination-out']);
+    });
+});
+
 describe('mask colour', () => {
+    it('does not walk the mask at mount', async () => {
+        // `appliedMaskColorRef` started as `undefined`, so every mount ran a full
+        // getImageData/putImageData pass over a canvas that was still blank.
+        const putImageData = vi.spyOn(CanvasRenderingContext2D.prototype, 'putImageData');
+
+        setup({ maskColor: '#ff0000' });
+        await settle();
+
+        expect(putImageData).not.toHaveBeenCalled();
+    });
+
     it('recolours existing strokes when the colour changes', async () => {
         const putImageData = vi.spyOn(CanvasRenderingContext2D.prototype, 'putImageData');
 

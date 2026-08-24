@@ -1,7 +1,23 @@
 /**
- * Flattens a canvas to a pure black-and-white mask and returns it as a PNG data URL.
+ * Half coverage. Painting and erasing both leave anti-aliased rims, and the exported mask is
+ * 1-bit, so a partly covered pixel has to be called one way or the other: at or above half it
+ * is masked, below it is not.
  *
- * Only *fully* black pixels stay black; everything else becomes white.
+ * The alternative — any coverage at all counts — is not symmetric with erasing. It would grow
+ * every stroke by the width of its rim, leave a masked halo behind every erase that no amount
+ * of erasing could remove, and creep outwards a little on each `onMaskChange` -> `initialMask`
+ * round trip. At half, that round trip is a fixed point.
+ */
+export const MASK_THRESHOLD = 128;
+
+/**
+ * Flattens the mask canvas to a pure black-and-white mask and returns it as a PNG data URL.
+ *
+ * Coverage decides, not colour: the editor paints in `maskColor` at full alpha and erases back
+ * to fully transparent, so a pixel with at least {@link MASK_THRESHOLD} alpha exports white and
+ * everything else exports black. Classifying by RGB — which is what this did — exported
+ * `maskColor: '#000000'` as if nothing had been painted at all, and could not tell an erased
+ * pixel from a painted one, because erasing used to paint an opaque colour of its own.
  *
  * The thresholding happens on a scratch canvas rather than in place. Mutating the live
  * surface and putting the original pixels back would cost two extra full-buffer writes per
@@ -17,7 +33,7 @@ export const toMask = (canvas: HTMLCanvasElement): string => {
     const data = imageData.data;
 
     for (let i = 0; i < data.length; i += 4) {
-        const pixelColor = data[i] === 0 && data[i + 1] === 0 && data[i + 2] === 0 ? 0 : 255;
+        const pixelColor = data[i + 3] >= MASK_THRESHOLD ? 255 : 0;
         data[i] = pixelColor;
         data[i + 1] = pixelColor;
         data[i + 2] = pixelColor;

@@ -3,23 +3,28 @@ import { hexToRgb, toMask } from '../src/utils';
 import { captureScratchCanvas, makeSeededCanvas } from './helpers/canvas';
 
 describe('toMask', () => {
-    // Three pixels: pure black, near-black, and white - each with a distinct alpha so we
-    // can prove the caller's buffer is left alone.
+    // A painted pixel in an arbitrary mask colour, a pixel erased back to nothing, and an
+    // anti-aliased rim either side of half coverage. The distinct alphas also let us prove the
+    // caller's buffer is left alone.
     const SEED = [
-        0,
-        0,
-        0,
-        10, // pure black
-        1,
-        0,
-        0,
-        255, // near-black
+        10,
+        20,
+        30,
+        255, // painted
         255,
         255,
         255,
-        128, // white
+        0, // erased - white RGB left behind, but no coverage
+        10,
+        20,
+        30,
+        200, // rim, mostly covered
+        10,
+        20,
+        30,
+        60, // rim, barely covered
     ];
-    const seed = () => makeSeededCanvas(3, 1, SEED);
+    const seed = () => makeSeededCanvas(4, 1, SEED);
 
     let scratch: ReturnType<typeof captureScratchCanvas>;
     beforeEach(() => {
@@ -34,32 +39,47 @@ describe('toMask', () => {
         expect(toMask(canvas)).toBe('data:image/png;base64,SCRATCH');
     });
 
-    it('binarizes to pure black and white', () => {
+    it('binarizes by coverage, not by colour', () => {
         const { canvas } = seed();
         toMask(canvas);
 
+        // This used to key off RGB, so `maskColor: '#000000'` exported as if nothing had been
+        // painted, and an erased pixel — opaque white, back then — exported as painted.
         expect(scratch.exported).toHaveLength(1);
         expect(scratch.exported[0]).toEqual([
+            255,
+            255,
+            255,
+            255, // painted, whatever colour it was painted in
             0,
             0,
             0,
-            255, // pure black stays black
+            255, // erased, however it was left coloured
             255,
             255,
             255,
-            255, // near-black becomes white - only exact black survives
-            255,
-            255,
-            255,
+            255, // rim at or above half coverage counts as masked
+            0,
+            0,
+            0,
             255,
         ]);
+    });
+
+    it('exports a black stroke as masked', () => {
+        // `maskColor: '#000000'` was indistinguishable from an untouched pixel under the old
+        // RGB test, so a black mask exported as entirely blank.
+        const { canvas } = makeSeededCanvas(1, 1, [0, 0, 0, 255]);
+        toMask(canvas);
+
+        expect(scratch.exported[0]).toEqual([255, 255, 255, 255]);
     });
 
     it('forces alpha to fully opaque on every pixel', () => {
         const { canvas } = seed();
         toMask(canvas);
         const alphas = scratch.exported[0]?.filter((_, i) => i % 4 === 3);
-        expect(alphas).toEqual([255, 255, 255]);
+        expect(alphas).toEqual([255, 255, 255, 255]);
     });
 
     it("never writes to the caller's canvas", () => {
@@ -74,7 +94,7 @@ describe('toMask', () => {
         const { canvas, ctx } = seed();
         toMask(canvas);
         expect(canvas.getContext).toHaveBeenCalledWith('2d');
-        expect(ctx.getImageData).toHaveBeenCalledWith(0, 0, 3, 1);
+        expect(ctx.getImageData).toHaveBeenCalledWith(0, 0, 4, 1);
     });
 
     it('handles a zero-size canvas without throwing', () => {
