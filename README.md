@@ -1,68 +1,73 @@
 # react-canvas-ai
 
-> 🖌️ A lightweight, flexible React component and hook for drawing and extracting masks from images using canvas. Perfect for AI workflows, in-browser image editing tools, and selective manipulation.
+A React mask editor for images — paint binary masks freehand with a brush, or switch to **auto selection** mode and click an object to have AI write its silhouette to the mask for you. Built for AI workflows (inpainting, selective editing, redaction) and any canvas-based image tool.
 
----
+You can see how it works in the [playground](https://vegidio.github.io/react-canvas-ai/).
 
-## 🧠 What is `react-canvas-ai`?
+## 💡 Motivation
 
-`react-canvas-ai` is a modern and actively maintained React library that allows users to **draw freeform masks over images**, extract those masked regions, and integrate with **AI-powered image processing** workflows or any kind of **canvas-based editing tool**.
+Painting a binary mask over an image with a brush works well — until the thing you actually want to mask is a person, a car, a pet, or any other complex shape. Dragging the brush around its outline is slow, imprecise, and tiring, especially on touch devices.
 
-It’s built as an enhanced fork of [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor), rewritten with:
+`react-canvas-ai` ships both interaction modes in one library:
 
-- ✅ Hook-based architecture
-- 🔁 Undo/redo support
-- 🔧 Flexible API
-- 🧼 Clean and modern codebase
+- **`paint` mode** — the freehand editor: brush, eraser, undo/redo, zoom/pan, history, and a lossless black-and-white PNG export of the mask.
+- **`auto` mode** — one click on the image and the object under the cursor is segmented by a Segment-Anything-style model; its silhouette is committed to the mask in the same colour, through the same history and change-notification path as a hand-painted stroke. Shift-click (or right-click) subtracts an object instead.
 
----
+Three things make auto selection practical:
 
-## 🚀 Features
+- **Runs entirely in the browser.** No server, no upload, no API key. The bundled backend runs [SlimSAM-77](https://huggingface.co/Xenova/slimsam-77-uniform) (a quantised distillation of Meta's Segment Anything model) through [`onnxruntime-web`](https://onnxruntime.ai/docs/tutorials/web/) on the user's device.
+- **Models are persisted client-side.** The first use downloads ~14 MB of ONNX weights; the library caches them in the browser's `Cache` storage, so subsequent visits load with zero network — even after a browser restart.
+- **Zero cost when unused.** The AI pipeline lives in a lazily loaded chunk behind a dynamic `import()`. If you never pass the `autoSelect` prop, none of it is downloaded, parsed, or executed — the editor stays a zero-dependency painting library.
 
-- ✅ Draw 1-bit (black/white) masks over any image using a brush tool
-- 🩹 Erase with `Shift` + drag or the secondary mouse button
-- 🔁 Undo/redo and clear support
-- 🎨 Customizable brush: size, color, opacity, blend mode
-- 🔍 Zoom and pan capabilities for precise mask editing
-- 🖱️ Intuitive controls: mouse wheel zoom, space+drag panning
-- 📦 Use as a component, hook, or via React context
-- ⚡ Imperative API via `ref`
-- 📱 Responsive design that adapts to container size
-- 🧪 Local demo/example app included
-
----
-
-## 📆 Installation
+## ⬇️ Installation
 
 ```bash
-pnpm add react-canvas-ai
-# or
-npm install react-canvas-ai
+$ pnpm add react-canvas-ai
 ```
+
+Or with `npm` / `yarn`:
+
+```bash
+$ npm install react-canvas-ai
+$ yarn add react-canvas-ai
+```
+
+If you want the AI auto-selection mode, also install the ONNX runtime:
+
+```bash
+$ pnpm add onnxruntime-web
+```
+
+Peer dependency ranges:
+
+- `react`, `react-dom` — `^19.2.0` (React 19)
+- `onnxruntime-web` — `^1.24.3` (**optional** — see below)
 
 There is **no stylesheet to import** — the component applies everything it needs itself.
 
-> **Versioning:** this package uses CalVer (`YY.M.MICRO`, e.g. `26.8.0`). Version numbers
-> carry no semver meaning, so a `^` range *can* pull in breaking changes. Pin an exact
-> version if that matters to you.
+> **Versioning:** this package uses CalVer (`YY.M.MICRO`, e.g. `26.8.0`). Version numbers carry no semver meaning, so a `^` range *can* pull in breaking changes. Pin an exact version if that matters to you.
 
----
+### What about `onnxruntime-web`?
 
-## 👨‍💼 Basic Usage – React Component
+Only the auto-selection mode needs ONNX Runtime, so it is declared as an *optional* peer dependency: consumers who use the editor purely for painting don't get an `npm install` warning and never ship a byte of it.
+
+The AI code is reached exclusively through a dynamic `import()`, so bundlers emit it as a separate chunk that the browser only fetches when a configured editor first warms the model. If you pass the `autoSelect` prop, you must install `onnxruntime-web` — the library will otherwise reject with an install hint the first time a detection is attempted.
+
+## 🖌️ Painting masks
 
 ```tsx
 import { useRef } from 'react';
-import { MaskEditor, toMask } from 'react-canvas-ai';
+import { MaskEditor, type MaskEditorCanvasRef, toMask } from 'react-canvas-ai';
 
 const MyComponent = () => {
-  const canvas = useRef(null);
+  const canvas = useRef<MaskEditorCanvasRef>(null);
   return (
     <>
-      <MaskEditor src="https://placekitten.com/256/256" ref={canvas} />
+      <MaskEditor src="https://example.com/photo.jpg" onDrawingChange={() => {}} ref={canvas} />
       <button
         onClick={() => {
           if (canvas.current?.maskCanvas) {
-            console.log(toMask(canvas.current.maskCanvas));
+            console.log(toMask(canvas.current.maskCanvas)); // black & white PNG data URL
           }
         }}
       >
@@ -73,65 +78,31 @@ const MyComponent = () => {
 };
 ```
 
-### Pre-loading an Existing Mask
+Drag to paint, `Shift`-drag (or drag with the secondary button) to erase, plain wheel to resize the brush, `Ctrl/Cmd + wheel` to zoom, `Space`-drag to pan, `Ctrl/Cmd + Z` / `Ctrl/Cmd + Y` to undo and redo.
 
-You can resume editing from a previously saved mask by passing it as the `initialMask` prop:
+### Pre-loading an existing mask
+
+Resume editing from a previously saved mask by passing it as the `initialMask` prop. It expects exactly what `onMaskChange` produces — white is masked, black is not — and the round trip is lossless:
 
 ```tsx
-import { useRef, useState } from 'react';
-import { MaskEditor, toMask } from 'react-canvas-ai';
-
-const MyComponent = () => {
-  const canvas = useRef(null);
-  const [savedMask, setSavedMask] = useState(null);
-
-  return (
-    <>
-      <MaskEditor 
-        src="https://placekitten.com/256/256" 
-        ref={canvas}
-        initialMask={savedMask} // Load previously saved mask
-        onMaskChange={(mask) => {
-          // Auto-save mask on changes
-          localStorage.setItem('myMask', mask);
-        }}
-      />
-      <button
-        onClick={() => {
-          if (canvas.current?.maskCanvas) {
-            const mask = toMask(canvas.current.maskCanvas);
-            setSavedMask(mask);
-            localStorage.setItem('myMask', mask);
-          }
-        }}
-      >
-        Save Mask
-      </button>
-      <button
-        onClick={() => {
-          const loadedMask = localStorage.getItem('myMask');
-          if (loadedMask) {
-            setSavedMask(loadedMask);
-          }
-        }}
-      >
-        Load Saved Mask
-      </button>
-    </>
-  );
-};
+<MaskEditor
+  src="https://example.com/photo.jpg"
+  onDrawingChange={() => {}}
+  initialMask={savedMask}
+  onMaskChange={(mask) => localStorage.setItem('myMask', mask)}
+/>
 ```
 
-
----
-
-## ⚙️ Component Props
+### Component props
 
 | Prop | Type | Required | Default | Description |
 | --- | --- | --- | --- | --- |
 | `src` | `string` | Yes | — | Source URL of the image to edit. |
 | `onDrawingChange` | `(isDrawing: boolean) => void` | Yes | — | Called when the user starts or stops drawing. |
-| `ref` | `Ref<MaskEditorCanvasRef>` | No | — | The editor's imperative handle — see [Ref API](#-ref-api-maskeditorcanvasref). Was `canvasRef` before the React 19 release. |
+| `ref` | `Ref<MaskEditorCanvasRef>` | No | — | The editor's imperative handle — see [Ref API](#ref-api-maskeditorcanvasref). Was `canvasRef` before the React 19 release. |
+| `autoSelect` | `AutoSelectOptions` | No | — | Enables the AI auto-selection mode — see [🤖 Auto-selection](#-auto-selection-ai). Absent, the editor is paint-only. |
+| `mode` | `'paint' \| 'auto'` | No | `'paint'` | Current interaction mode, quasi-controlled: the prop wins when it changes, `setMode` wins in between. Forced to `'paint'` without `autoSelect`. |
+| `onModeChange` | `(mode: MaskEditorMode) => void` | No | — | Called when the mode changes through `setMode` / the ref. |
 | `className` | `string` | No | — | Appended to the root element's own class name. |
 | `style` | `React.CSSProperties` | No | — | Merged over the root element's built-in layout styles (yours win). |
 | `cursorSize` | `number` | No | `10` | Radius in pixels of the brush. |
@@ -145,7 +116,7 @@ const MyComponent = () => {
 | `onUndoRequest` | `() => void` | No | — | Called when the user requests an undo. |
 | `onRedoRequest` | `() => void` | No | — | Called when the user requests a redo. |
 | `onMaskChange` | `(mask: string) => void` | No | — | Called with the mask as a data URL. Debounced while drawing. |
-| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. Expects exactly what `onMaskChange` produces — white is masked, black is not — and the round trip is lossless. |
+| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. |
 | `scale` | `number` | No | `1` | Initial zoom scale. |
 | `minScale` | `number` | No | `0.8` | Minimum zoom scale. |
 | `maxScale` | `number` | No | `4` | Maximum zoom scale. |
@@ -155,48 +126,176 @@ const MyComponent = () => {
 | `constrainPan` | `boolean` | No | `true` | Keep the image within view while panning. |
 | `keyboardScope` | `'window' \| 'container'` | No | `window` | Where undo/redo and the pan modifier keys are listened for. Use `container` when more than one editor is on the page. |
 
-`MaskBlendMode` is the union of the CSS `mix-blend-mode` keywords: `normal`, `multiply`,
-`screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`,
-`soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`.
+`MaskBlendMode` is the union of the CSS `mix-blend-mode` keywords: `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`.
 
----
-
-## 🧩 Ref API (`MaskEditorCanvasRef`)
+### Ref API (`MaskEditorCanvasRef`)
 
 The `MaskEditor` component exposes useful methods via `ref`:
 
-| Name            | Type                             | Description                                                    |
-| --------------- | -------------------------------- | -------------------------------------------------------------- |
-| `maskCanvas?`   | `HTMLCanvasElement`              | The mask canvas element, or `undefined` before it has mounted. See the representation note below. |
-| `maskColor`     | `string`                         | The colour strokes are currently painted with.                 |
-| `maskOpacity`   | `number`                         | The mask layer's current opacity.                              |
-| `maskBlendMode` | `MaskBlendMode`                  | The mask layer's current `mix-blend-mode`.                     |
-| `cursorSize`    | `number`                         | The current brush diameter, wheel-driven changes included.     |
-| `undo()`        | `() => void`                     | Undo the last mask change.                                     |
-| `redo()`        | `() => void`                     | Redo the last undone mask change.                              |
-| `clear()`       | `() => void`                     | Clear the mask.                                                |
-| `resetZoom()`   | `() => void`                     | Reset zoom to initial scale and center the image.              |
-| `setPan()`      | `(x: number, y: number) => void` | Set the pan position manually.                                 |
-| `zoomIn()`      | `() => void`                     | Zoom in by one step (0.2 scale increment).                     |
-| `zoomOut()`     | `() => void`                     | Zoom out by one step (0.2 scale decrement).                    |
+| Name | Type | Description |
+| --- | --- | --- |
+| `maskCanvas?` | `HTMLCanvasElement` | The mask canvas element, or `undefined` before it has mounted. See the representation note below. |
+| `maskColor` | `string` | The colour strokes are currently painted with. |
+| `maskOpacity` | `number` | The mask layer's current opacity. |
+| `maskBlendMode` | `MaskBlendMode` | The mask layer's current `mix-blend-mode`. |
+| `cursorSize` | `number` | The current brush radius, wheel-driven changes included. |
+| `mode` | `MaskEditorMode` | The active interaction mode (`'paint'` without `autoSelect`). |
+| `autoSelectStatus` | `AutoSelectStatus` | Lifecycle of the AI backend (`'idle'` without `autoSelect`). |
+| `undo()` | `() => void` | Undo the last mask change. |
+| `redo()` | `() => void` | Redo the last undone mask change. |
+| `clear()` | `() => void` | Clear the mask. |
+| `resetZoom()` | `() => void` | Reset zoom to initial scale and center the image. |
+| `setPan()` | `(x: number, y: number) => void` | Set the pan position manually. |
+| `zoomIn()` | `() => void` | Zoom in by one step (0.2 scale increment). |
+| `zoomOut()` | `() => void` | Zoom out by one step (0.2 scale decrement). |
+| `setMode()` | `(mode: MaskEditorMode) => void` | Switch between `'paint'` and `'auto'`. Warns and no-ops on `'auto'` without `autoSelect`. |
+| `selectAt()` | `(point: { x; y }) => Promise<DetectedObject \| undefined>` | Programmatic auto-selection at a canvas-pixel point — see [🤖 Auto-selection](#-auto-selection-ai). |
 
-The four style members are live reads of what the editor is painting with right now, so a peer
-component or plugin that draws into `maskCanvas` itself can match hand-painted strokes without
-being handed the same style props a second time.
+The style members, `mode` and `autoSelectStatus` are live reads of the editor's current state, so a peer component that draws into `maskCanvas` itself can match hand-painted strokes without being handed the same props a second time.
 
-The mask layer holds `maskColor` at full alpha wherever the image is masked and is **fully
-transparent everywhere else** — coverage is the state, and no colour is reserved to mean
-anything. If you draw into `maskCanvas` yourself, add coverage with alpha and remove it with
-`globalCompositeOperation = 'destination-out'`; painting an opaque "background" colour over a
-stroke does not unmask it, it just paints over the photo.
+The mask layer holds `maskColor` at full alpha wherever the image is masked and is **fully transparent everywhere else** — coverage is the state, and no colour is reserved to mean anything. If you draw into `maskCanvas` yourself, add coverage with alpha and remove it with `globalCompositeOperation = 'destination-out'`; painting an opaque "background" colour over a stroke does not unmask it, it just paints over the photo. Auto-selected masks are committed through the exact same representation.
 
----
+## 🤖 Auto-selection (AI)
 
-## 🧪 Advanced Usage
+Pass the `autoSelect` prop and the editor gains its second interaction mode:
+
+```tsx
+import { useRef, useState } from 'react';
+import {
+  MaskEditor,
+  type AutoSelectStatus,
+  type MaskEditorCanvasRef,
+  type MaskEditorMode,
+} from 'react-canvas-ai';
+
+const sam = {
+  encoderUrl: '/models/vision_encoder_quantized.onnx',
+  decoderUrl: '/models/prompt_encoder_mask_decoder_quantized.onnx',
+};
+
+export const Editor = ({ src }: { src: string }) => {
+  const canvas = useRef<MaskEditorCanvasRef>(null);
+  const [mode, setMode] = useState<MaskEditorMode>('paint');
+  const [status, setStatus] = useState<AutoSelectStatus>('idle');
+
+  return (
+    <>
+      <MaskEditor
+        src={src}
+        onDrawingChange={() => {}}
+        ref={canvas}
+        mode={mode}
+        onModeChange={setMode}
+        autoSelect={{
+          sam,
+          onStatusChange: setStatus,
+          onObjectDetected: (object) => console.log('masked', object.bbox, object.score),
+          onError: (error) => console.error(error),
+        }}
+      />
+
+      <button type="button" onClick={() => setMode(mode === 'paint' ? 'auto' : 'paint')}>
+        Switch to {mode === 'paint' ? 'auto-select' : 'paint'} mode
+      </button>
+      <p>Status: {status}</p>
+    </>
+  );
+};
+```
+
+In auto mode:
+
+- **Click** an object and its silhouette is written to the mask in the current `maskColor`.
+- **Shift-click** or **right-click** subtracts the detected object from the mask instead — the same modifier that erases in paint mode.
+- **Zoom and pan keep working** (`Ctrl/Cmd + wheel`, `Space`-drag, middle button), and clicks land correctly at any zoom level — the editor maps them through its own zoom/pan transform.
+- Drags, pans, and clicks made while a detection is already running are ignored; the cursor turns to a crosshair, and to `progress` while detecting.
+- The brush is fully suspended: no dabs, no brush outline, no wheel resizing.
+
+Every auto selection is committed through the editor's normal pipeline: it lands in the **undo history** (one `Ctrl/Cmd + Z` removes it), fires **`onMaskChange`**, and is painted in the live `maskColor` at full alpha — pixel-identical to manual paint, so recolouring, exporting and erasing treat it like any stroke.
+
+### `AutoSelectOptions`
+
+| Option | Type | Default | Description |
+| --- | --- | --- | --- |
+| `sam` | `SamConfig` | required | Model configuration — see below. |
+| `preload` | `boolean` | `false` | Warm the sessions and image embedding as soon as the image decodes, instead of on the first switch to auto mode. |
+| `minScore` | `number` | `0` | Detections scoring below this are discarded — the click paints nothing. |
+| `onObjectDetected` | `(object: DetectedObject) => void` | — | Called after a detection has been committed to the mask. |
+| `onError` | `(error: Error) => void` | — | Called when the model load or a click-driven detection fails. |
+| `onStatusChange` | `(status: AutoSelectStatus) => void` | — | Lifecycle notifications; hook/provider consumers can read `autoSelectStatus` from the return value instead. |
+
+`SamConfig` takes `encoderUrl` and `decoderUrl` (required), plus optional `wasmPaths` (override for `ort.env.wasm.wasmPaths`), `executionProviders` (default `['wasm']`) and `debug` (log tensor names on load).
+
+The backend walks through this lifecycle: `idle` → `loading` (downloading the ONNX files and running the encoder once on the image — the embedding is then cached) → `ready` → `detecting` (per click) → `ready` (or `error`). The model warms on the first switch to auto mode — or eagerly with `preload` — and **stays warm** when the user toggles back to paint. A new `src` automatically re-encodes; there is nothing to invalidate by hand.
+
+### `selectAt` — programmatic selection
+
+`selectAt(point)` is the programmatic twin of a click in auto mode (available on the ref, the hook return, and the context): it detects the object at a canvas-pixel point, commits it to the mask — undoable, reported through `onMaskChange` — and resolves with the `DetectedObject` (`id`, `score`, `bbox`, and the alpha-silhouette `mask: ImageData`), or `undefined` when nothing scored above `minScore`:
+
+```ts
+const detected = await canvas.current?.selectAt({ x: 320, y: 180 });
+```
+
+It works in either mode and rejects when `autoSelect` is not configured or the image has not loaded. Unlike a click, failures are the caller's to handle — they are not routed to `autoSelect.onError`.
+
+### Where do the model files come from?
+
+The bundled SAM backend takes two strings, `sam.encoderUrl` and `sam.decoderUrl`. They are passed verbatim to `fetch()`, so anything `fetch` accepts works — an absolute URL, a same-origin path, even a `blob:` URL. After the first successful load, both files are stored in `caches.open('react-canvas-ai-sam-v1')` and served from there on every subsequent page load with zero network, until you call `clearSamCache()` or the browser evicts.
+
+You have three reasonable choices for **where** those files live:
+
+#### 1. Hugging Face CDN (prototyping only)
+
+The original [Xenova/slimsam-77-uniform](https://huggingface.co/Xenova/slimsam-77-uniform) export is hosted on the Hugging Face CDN. You can point the library directly at it while you evaluate:
+
+```ts
+const sam = {
+  encoderUrl: 'https://huggingface.co/Xenova/slimsam-77-uniform/resolve/main/onnx/vision_encoder_quantized.onnx',
+  decoderUrl: 'https://huggingface.co/Xenova/slimsam-77-uniform/resolve/main/onnx/prompt_encoder_mask_decoder_quantized.onnx',
+};
+```
+
+The [`playground/`](playground/) app in this repo uses exactly this approach, parameterised via the `VITE_SAM_ENCODER_URL` / `VITE_SAM_DECODER_URL` env vars (see [`playground/.env.example`](playground/.env.example)).
+
+It works, but it is **not recommended for production**: Hugging Face rate-limits its CDN, you don't control the caching headers, and your app's availability ends up depending on a third party.
+
+#### 2. Self-host on your own CDN (recommended for production)
+
+Mirror both `.onnx` files to your own origin (S3, R2, Cloudfront, your own server, whatever you use), serve them with a strong immutable cache header, and pass those URLs:
+
+```ts
+const sam = {
+  encoderUrl: 'https://cdn.example.com/sam/vision_encoder_quantized.onnx',
+  decoderUrl: 'https://cdn.example.com/sam/prompt_encoder_mask_decoder_quantized.onnx',
+};
+```
+
+Recommended response header for the `.onnx` files:
+
+```
+Cache-Control: public, max-age=31536000, immutable
+```
+
+#### 3. Bundle the files locally with your app
+
+Drop the two `.onnx` files into your project's static-assets folder — `public/models/` for Vite or Next.js — and point at the same-origin path:
+
+```ts
+const sam = {
+  encoderUrl: '/models/vision_encoder_quantized.onnx',
+  decoderUrl: '/models/prompt_encoder_mask_decoder_quantized.onnx',
+};
+```
+
+The two file names are `vision_encoder_quantized.onnx` (~8.9 MB) and `prompt_encoder_mask_decoder_quantized.onnx` (~4.9 MB) — a one-time ~14 MB download regardless of which option you pick. During development you can call `clearSamCache()` (exported from the package) to wipe the persistent cache and force a re-download.
+
+> **A note on the WASM runtime.** Separately from the `.onnx` model files, `onnxruntime-web` also needs its own WebAssembly engine (`ort-wasm-simd-threaded.wasm` and a couple of `.mjs` glue files) to actually execute the model. By default, it loads them from `cdn.jsdelivr.net`, which works well: JSDelivr is fast, the files are immutably cached by the browser, and you don't need any extra setup. If you'd rather control the delivery yourself — for stricter privacy, CSP, or to keep your app independent of a third-party CDN — you can self-host these files the same way you'd self-host the model files (copy them out of `node_modules/onnxruntime-web/dist/` into your static-assets folder) and point ORT at them by passing `wasmPaths: '/your-prefix/'` in the `sam` config.
+
+## 🧪 Advanced usage
 
 ### Using the `useMaskEditor` hook
 
-You can manage the full mask editing flow yourself:
+You can manage the full mask editing flow yourself. The hook accepts every prop the component does (`autoSelect`, `mode` and `onModeChange` included) and returns the complete editor state — the auto-selection members `mode`, `setMode`, `autoSelectStatus`, `isDetecting` and `selectAt` among them:
 
 ```tsx
 const CustomMaskEditor = () => {
@@ -219,21 +318,22 @@ const CustomMaskEditor = () => {
     resetZoom,
     isPanning,
     setPan,
+    mode,
+    setMode,
+    isDetecting,
   } = useMaskEditor({
-    src: 'https://placekitten.com/256/256',
+    src: 'https://example.com/photo.jpg',
     maskColor: '#00ff00',
-    maxWidth: 1024, // Optional: limit image width
-    maxHeight: 1024, // Optional: limit image height
+    maxWidth: 1024,
+    maxHeight: 1024,
     onDrawingChange: (drawing) => console.log(drawing),
-    // Zoom and pan options
-    scale: 1, // Initial scale
-    minScale: 0.5, // Minimum zoom allowed
-    maxScale: 5, // Maximum zoom allowed
-    enableWheelZoom: true, // Enable mouse wheel zoom
-    constrainPan: true, // Keep image in view while panning
-    keyboardScope: 'window', // 'container' scopes shortcuts to the focused editor
-    onScaleChange: (newScale) => console.log(`Zoom level: ${newScale}`),
-    onPanChange: (x, y) => console.log(`Pan position: ${x}, ${y}`),
+    autoSelect: { sam: { encoderUrl: '/models/encoder.onnx', decoderUrl: '/models/decoder.onnx' } },
+    scale: 1,
+    minScale: 0.5,
+    maxScale: 5,
+    enableWheelZoom: true,
+    constrainPan: true,
+    keyboardScope: 'window',
   });
 
   const transformStyle = useMemo(() => {
@@ -250,27 +350,19 @@ const CustomMaskEditor = () => {
     };
   }, [transform, effectiveScale, isPanning, size]);
 
+  // In a headless layout you own the cursor: read `mode`/`isDetecting` and pick one.
+  const cursor = isPanning ? 'grabbing' : mode === 'auto' ? (isDetecting ? 'progress' : 'crosshair') : 'default';
+
   return (
-    <div
-      className="react-mask-editor-outer"
-      style={{
-        maxWidth: `${1024}px`,
-        maxHeight: `${1024}px`,
-        minHeight: '300px',
-        width: '100%',
-        height: '100%',
-      }}
-      tabIndex={0}
-    >
+    <div className="my-editor" style={{ width: '100%', height: '100%' }}>
       <div className="controls">
         <button onClick={undo}>Undo</button>
         <button onClick={redo}>Redo</button>
         <button onClick={clear}>Clear</button>
         <button onClick={resetZoom}>Reset Zoom</button>
-        <button onClick={() => setPan(0, 0)}>Center Image</button>
+        <button onClick={() => setMode(mode === 'paint' ? 'auto' : 'paint')}>Toggle auto-select</button>
       </div>
       <div
-        className="react-mask-editor-inner"
         {...containerProps}
         style={{
           width: '100%',
@@ -282,56 +374,22 @@ const CustomMaskEditor = () => {
           alignItems: 'center',
         }}
       >
-        <div
-          className="canvas-container"
-          style={{
-            position: 'relative',
-            maxWidth: '100%',
-            maxHeight: '100%',
-            width: '100%',
-            height: '100%',
-            minHeight: '200px',
-            overflow: 'hidden',
-          }}
-        >
-          <div className="all-canvases" style={transformStyle}>
-            <canvas
-              key={key}
-              ref={canvasRef}
-              style={{
-                width: size.x,
-                height: size.y,
-              }}
-              width={size.x}
-              height={size.y}
-              className="react-mask-editor-base-canvas"
-            />
-            <canvas
-              ref={maskCanvasRef}
-              width={size.x}
-              height={size.y}
-              style={{
-                width: size.x,
-                height: size.y,
-                opacity: maskOpacity,
-                mixBlendMode: maskBlendMode as any,
-              }}
-              className="react-mask-editor-mask-canvas"
-            />
-            <canvas
-              ref={cursorCanvasRef}
-              width={size.x}
-              height={size.y}
-              onMouseUp={handleMouseUp}
-              onMouseDown={handleMouseDown}
-              style={{
-                width: size.x,
-                height: size.y,
-                cursor: isPanning ? 'grabbing' : 'default',
-              }}
-              className="react-mask-editor-cursor-canvas"
-            />
-          </div>
+        <div className="all-canvases" style={transformStyle}>
+          <canvas key={key} ref={canvasRef} width={size.x} height={size.y} />
+          <canvas
+            ref={maskCanvasRef}
+            width={size.x}
+            height={size.y}
+            style={{ opacity: maskOpacity, mixBlendMode: maskBlendMode, pointerEvents: 'none' }}
+          />
+          <canvas
+            ref={cursorCanvasRef}
+            width={size.x}
+            height={size.y}
+            onMouseUp={handleMouseUp}
+            onMouseDown={handleMouseDown}
+            style={{ cursor }}
+          />
         </div>
       </div>
     </div>
@@ -339,48 +397,29 @@ const CustomMaskEditor = () => {
 };
 ```
 
+(Prefer `MaskEditorLayers` over hand-rolling the three canvases — it carries the stacking, z-order, pointer-events and blend-mode contract for you, and its `cursor` prop takes the value computed above. `maskEditorLayerStyles(...)` is exported for layouts that must place the canvases themselves.)
+
 ### Using `MaskEditorProvider` context
 
-Ideal if you want to split canvas and controls across components:
+Ideal if you want to split canvas and controls across components. The context value is the full `useMaskEditor` return, auto-selection state included:
 
 ```tsx
-import {
-  MaskEditorLayers,
-  MaskEditorProvider,
-  useMaskEditorContext,
-} from 'react-canvas-ai';
+import { MaskEditorLayers, MaskEditorProvider, useMaskEditorContext } from 'react-canvas-ai';
 
 const MaskEditorCanvas = () => {
-  const { containerProps, transform, isPanning } = useMaskEditorContext();
+  const { containerProps, size, mode, isDetecting } = useMaskEditorContext();
 
   return (
     // Spread containerProps: it carries the ref, focus handling and the Space
     // interception that keyboard shortcuts and panning depend on.
-    <div
-      {...containerProps}
-      style={{ width: '100%', height: '500px', position: 'relative' }}
-    >
-      <div
-        style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          transform: `translate(-50%, -50%) scale(${transform.scale}) translate(${transform.translateX}px, ${transform.translateY}px)`,
-          transition: isPanning ? 'none' : 'transform 0.15s ease-out',
-        }}
-      >
-        {/* Renders the three canvases with the right stacking, z-order,
-            pointer-events and blend mode. Use maskEditorLayerStyles instead if
-            you need to lay them out yourself. */}
-        <MaskEditorLayers />
-      </div>
+    <div {...containerProps} style={{ position: 'relative', width: size.x, height: size.y }}>
+      <MaskEditorLayers cursor={mode === 'auto' ? (isDetecting ? 'progress' : 'crosshair') : undefined} />
     </div>
   );
 };
 
 const MaskEditorControls = () => {
-  const { undo, redo, clear, resetZoom, setPan, scale, zoomIn, zoomOut } =
-    useMaskEditorContext();
+  const { undo, redo, clear, zoomIn, zoomOut, mode, setMode, autoSelectStatus } = useMaskEditorContext();
 
   return (
     <div className="controls">
@@ -389,29 +428,18 @@ const MaskEditorControls = () => {
       <button onClick={clear}>Clear</button>
       <button onClick={zoomIn}>Zoom In</button>
       <button onClick={zoomOut}>Zoom Out</button>
-      <button onClick={resetZoom}>Reset Zoom</button>
-      <button onClick={() => setPan(0, 0)}>Center Image</button>
-      <div>Current Zoom: {Math.round(scale * 100)}%</div>
+      <button onClick={() => setMode(mode === 'paint' ? 'auto' : 'paint')}>
+        Mode: {mode} ({autoSelectStatus})
+      </button>
     </div>
   );
 };
 
 const App = () => (
   <MaskEditorProvider
-    src="https://placekitten.com/256/256"
-    maxWidth={1024} // Optional: limit image width
-    maxHeight={1024} // Optional: limit image height
-    crossOrigin="anonymous" // Optional: set crossOrigin for CORS
+    src="https://example.com/photo.jpg"
     onDrawingChange={() => {}}
-    // Zoom and pan options
-    scale={1}
-    minScale={0.5}
-    maxScale={5}
-    enableWheelZoom={true}
-    constrainPan={true}
-    keyboardScope='window'
-    onScaleChange={(scale) => console.log(`Zoom: ${scale}`)}
-    onPanChange={(x, y) => console.log(`Pan: ${x}, ${y}`)}
+    autoSelect={{ sam: { encoderUrl: '/models/encoder.onnx', decoderUrl: '/models/decoder.onnx' } }}
   >
     <MaskEditorCanvas />
     <MaskEditorControls />
@@ -419,25 +447,21 @@ const App = () => (
 );
 ```
 
----
+## 🔍 Zoom and pan
 
-## 🔍 Zoom and Pan Features
+The editor includes zoom and pan capabilities for precise mask editing, in both modes:
 
-The editor includes sophisticated zoom and pan capabilities to enable precise mask editing:
-
-### User Interactions
-
-- **Zoom**: Use `Ctrl/Cmd + Mouse Wheel` to zoom in/out centered on image
-- **Pan**: Hold `Space` and drag to pan the image, or use middle mouse button
-- **Erase**: Hold `Shift` and drag, or drag with the secondary mouse button, to rub the mask away
-- **Resize Brush**: Use `Mouse Wheel` (without modifier keys) to adjust brush size
+- **Zoom**: `Ctrl/Cmd + Mouse Wheel`, centered on the cursor
+- **Pan**: hold `Space` and drag, or use the middle mouse button
+- **Erase**: hold `Shift` and drag, or drag with the secondary mouse button (in auto mode: shift-click / right-click subtracts the detected object)
+- **Resize brush**: plain `Mouse Wheel` (paint mode only)
 - **Undo / Redo**: `Ctrl/Cmd + Z` and `Ctrl/Cmd + Y` (or `Ctrl/Cmd + Shift + Z`)
+
+Programmatic control is available everywhere the editor state is: `zoomIn()`, `zoomOut()`, `resetZoom()` (also recenters), `setPan(x, y)` and `setScale(n)` on the ref, the hook return, and the context.
 
 ### Keyboard scope
 
-By default the editor listens for shortcuts on `window`, so `Ctrl/Cmd + Z` works from
-anywhere on the page. That is the right behaviour for a single editor, but it means **two
-editors on the same page both respond to one keystroke**.
+By default the editor listens for shortcuts on `window`, so `Ctrl/Cmd + Z` works from anywhere on the page. That is the right behaviour for a single editor, but it means **two editors on the same page both respond to one keystroke**.
 
 Set `keyboardScope="container"` to make an editor respond only while focus is inside it:
 
@@ -445,78 +469,13 @@ Set `keyboardScope="container"` to make an editor respond only while focus is in
 <MaskEditor src={src} onDrawingChange={setDrawing} keyboardScope='container' />
 ```
 
-In this mode the editor takes focus when you click it, and shows a focus ring you can
-restyle through the `.react-mask-editor-inner` class. Keystrokes typed into an `<input>`,
-`<textarea>` or `contenteditable` element are ignored in both modes.
+In this mode the editor takes focus when you click it, and shows a focus ring you can restyle through the `.react-mask-editor-inner` class. Keystrokes typed into an `<input>`, `<textarea>` or `contenteditable` element are ignored in both modes.
 
-Key *releases* are never scoped — a `Space` release is honoured even if focus has since
-moved, so panning cannot get stuck on.
-
-### Zoom Control API
-
-The editor now provides explicit zoom control methods through the imperative API:
-
-- **zoomIn()**: Increases zoom by 0.2 scale increment (respects maxScale limit)
-- **zoomOut()**: Decreases zoom by 0.2 scale decrement (respects minScale limit)
-- **resetZoom()**: Resets zoom to scale 1 and centers the image
-- **setPan(x, y)**: Manually sets the pan position
-
-These methods can be accessed through:
-
-- Component ref: `maskEditorRef.current.zoomIn()`
-- Context: `const { zoomIn } = useMaskEditorContext()`
-- Hook: `const { zoomIn } = useMaskEditor(props)`
-
-Perfect for implementing custom toolbar zoom controls with buttons or sliders!
-
-### Automatic Behaviors
-
-- **Responsive Scaling**: Images automatically scale to fit their container
-- **Smooth Transitions**: Gentle animations when zooming (disabled during active panning)
-- **Position Constraints**: Optional boundaries prevent the image from being panned too far out of view
-- **Centered Reset**: `resetZoom()` function centers the image and resets scale to 1
-
-### Programmatic Control
-
-```tsx
-// Example of programmatically controlling zoom and pan
-const CustomZoomControls = () => {
-  const maskEditorRef = useRef(null);
-
-  return (
-    <>
-      <button onClick={() => maskEditorRef.current?.zoomIn()}>Zoom In</button>
-      <button onClick={() => maskEditorRef.current?.zoomOut()}>Zoom Out</button>
-      <button onClick={() => maskEditorRef.current?.resetZoom()}>
-        Reset Zoom & Center
-      </button>
-      <button onClick={() => maskEditorRef.current?.setPan(50, 20)}>
-        Move to Position
-      </button>
-    </>
-  );
-};
-```
-
----
-
-## 💡 Use Cases
-
-`react-canvas-ai` is great for:
-
-- ✨ **AI image editing apps** (e.g. Stable Diffusion, DALL·E, Sora, etc.)
-- 🔧 **Web-based design tools** (like Figma clones or mockup tools)
-- 📍 **Educational tools** where users interact with images
-- 🔮 **Selective filtering or redacting images** (blur, crop, etc.)
-- 🚀 **Creative playgrounds** or generative UIs
-
----
+Key *releases* are never scoped — a `Space` release is honoured even if focus has since moved, so panning cannot get stuck on.
 
 ## 🎨 Styling
 
-The component ships **no CSS file** and requires no import. Structural styles (canvas
-stacking, sizing, compositor hints) are applied inline so the library works in any
-bundler and any SSR setup out of the box.
+The component ships **no CSS file** and requires no import. Structural styles (canvas stacking, sizing, compositor hints) are applied inline so the library works in any bundler and any SSR setup out of the box.
 
 Two ways to customise it:
 
@@ -526,125 +485,97 @@ Two ways to customise it:
 
 Or target the stable class names, which are kept purely as styling hooks:
 
-`react-mask-editor-outer` · `react-mask-editor-inner` · `canvas-container` ·
-`all-canvases` · `react-mask-editor-base-canvas` · `react-mask-editor-mask-canvas` ·
-`react-mask-editor-cursor-canvas`
+`react-mask-editor-outer` · `react-mask-editor-inner` · `canvas-container` · `all-canvases` · `react-mask-editor-base-canvas` · `react-mask-editor-mask-canvas` · `react-mask-editor-cursor-canvas`
 
-Because the built-in rules are inline, a plain class selector will not beat them — use
-the `style` prop (it is merged last and wins) or `!important` in your own stylesheet.
+Because the built-in rules are inline, a plain class selector will not beat them — use the `style` prop (it is merged last and wins) or `!important` in your own stylesheet.
 
----
+## 💣 Troubleshooting
+
+### WebGPU produces noisy or tiled masks (`iou_scores > 1.0`)
+
+The bundled backend defaults to the `wasm` execution provider for a reason. `onnxruntime-web@1.24` cannot assign every operator in the INT8-quantised SlimSAM-77 export to its WebGPU EP, and the operators that fall back to CPU end up round-tripping quantised activations across the EP boundary. The result is silently corrupted mask logits — telltale signs are a noisy, tiled-looking mask and `iou_scores` greater than `1.0`.
+
+Keep the default `executionProviders: ['wasm']` unless you are shipping a different SAM export (e.g. a non-quantised or FP16 one) that you have re-verified end-to-end on WebGPU.
+
+### The model won't load / I changed the model files but the old ones are used
+
+Model files are cached in the browser's Cache Storage under the bucket `react-canvas-ai-sam-v1`, keyed by URL. If you replace the files behind the *same* URL, call the exported `clearSamCache()` (or bump the URL) to force a re-download. A genuine fetch failure (404, CORS) is reported through `autoSelect.onError` with the status code and URL.
+
+### `setMode('auto')` does nothing
+
+Auto mode only exists when the `autoSelect` prop is configured — without it the editor is paint-only, `mode` is forced to `'paint'`, and `setMode('auto')` warns on the console and is ignored.
+
+## 🔀 Migrating from `react-canvas-masker-auto-selection`
+
+Auto-selection used to live in a separate plugin package layered on top of `react-canvas-masker`. It is now built into the editor, and the merge removes every seam the plugin needed:
+
+1. **Drop the extra dependency** — `react-canvas-masker-auto-selection` is no longer needed; `onnxruntime-web` stays.
+2. **Delete `<AutoSelectionOverlay>` and the `position: relative` wrapper.** Auto mode is handled by the editor's own pointer layer; there is no overlay element.
+3. **`useAutoSelection({ canvasRef, source, sam })` becomes the `autoSelect` prop.** The editor already owns the canvas and the decoded image, so `canvasRef` and `source` disappear; `sam` moves into `autoSelect.sam`.
+4. **`maskStyle` is gone.** Detected masks are always committed in the editor's live `maskColor` — there is no second colour to keep in sync.
+5. **`mode`/`setMode`/`toggleMode`/`status` move onto the editor** (`mode` prop + `onModeChange`, `setMode` on the ref/hook/context, `autoSelectStatus` + `onStatusChange`).
+6. **`detectAt(point)` becomes `selectAt(point)`** — and it now commits the result (undoable, fires `onMaskChange`) instead of leaving compositing to you.
+7. **`invalidateEmbedding()` is gone.** The embedding is keyed on the editor's decoded image, so a new `src` re-encodes automatically.
+8. **Clicks are now zoom/pan-correct.** The plugin mapped clicks through `getBoundingClientRect`, which broke under the editor's transform; the merged editor maps them through its own coordinates.
+9. **Auto selections are undoable and fire `onMaskChange`** — the plugin painted behind the editor's back, so neither used to be true.
+10. **The model cache bucket is renamed** from `rcm-auto-selection-sam-v1` to `react-canvas-ai-sam-v1`, so first use re-downloads the models once.
 
 ## 🔀 Migrating to the React 19 release
 
-CalVer carries no semver signal, so breaking changes are called out here rather than in the
-version number. Pin an exact version if you need to upgrade deliberately.
+CalVer carries no semver signal, so breaking changes are called out here rather than in the version number. Pin an exact version if you need to upgrade deliberately.
 
-1. **React 19.2 or newer is required.** The peer range was `>=18 <20` and is now `^19.2.0`.
-   This is what lets the package use `useEffectEvent`, ref callbacks with cleanup and the
-   `<Context>` provider shorthand instead of hand-rolled equivalents.
-2. **`MaskEditor`'s `canvasRef` prop is now `ref`.** React 19 passes `ref` as an ordinary
-   prop, so the editor's imperative handle uses the standard spelling:
+1. **React 19.2 or newer is required.** The peer range was `>=18 <20` and is now `^19.2.0`. This is what lets the package use `useEffectEvent`, ref callbacks with cleanup and the `<Context>` provider shorthand instead of hand-rolled equivalents.
+2. **`MaskEditor`'s `canvasRef` prop is now `ref`.** React 19 passes `ref` as an ordinary prop, so the editor's imperative handle uses the standard spelling:
    ```diff
    - <MaskEditor src={src} canvasRef={canvas} />
    + <MaskEditor src={src} ref={canvas} />
    ```
-3. **`containerProps.ref` is a callback ref.** Spread `containerProps` rather than reaching
-   into it — the zoom/pan wiring has to be told when the container attaches, which a ref
-   object cannot do. `containerRef` is still returned, but it is an *output*: attaching it
-   by hand instead of spreading `containerProps` leaves the editor unable to fit, zoom or
-   pan.
-4. **`canvasRef`, `maskCanvasRef` and `cursorCanvasRef` are callable refs.** They are now
-   `ElementHandle`, which is a ref callback that also carries `.current`. Both
-   `<canvas ref={maskCanvasRef} />` and `maskCanvasRef.current` keep working unchanged; only
-   the type differs. This is what lets a conditionally rendered canvas still receive its 2D
-   context and brush listeners.
-5. **`setCursorSize` takes a number.** It used to be typed as the raw `useState` dispatch.
-   Updater functions are no longer accepted:
+3. **`containerProps.ref` is a callback ref.** Spread `containerProps` rather than reaching into it — the zoom/pan wiring has to be told when the container attaches, which a ref object cannot do. `containerRef` is still returned, but it is an *output*: attaching it by hand instead of spreading `containerProps` leaves the editor unable to fit, zoom or pan.
+4. **`canvasRef`, `maskCanvasRef` and `cursorCanvasRef` are callable refs.** They are now `ElementHandle`, which is a ref callback that also carries `.current`. Both `<canvas ref={maskCanvasRef} />` and `maskCanvasRef.current` keep working unchanged; only the type differs. This is what lets a conditionally rendered canvas still receive its 2D context and brush listeners.
+5. **`setCursorSize` takes a number.** It used to be typed as the raw `useState` dispatch. Updater functions are no longer accepted:
    ```diff
    - setCursorSize((n) => n + 1);
    + setCursorSize(cursorSize + 1);
    ```
-6. **A re-fit preserves your zoom.** `scale` and `transform.scale` used to be separate state
-   that disagreed: the mount fit wrote the transform without touching `scale`, so
-   `scale={2}` rendered zoomed but could not be panned. They are one value now — an initial
-   scale above 1 both renders and pans, and a container resize recentres the pan while
-   keeping the zoom instead of silently discarding it.
-7. **`onScaleChange` and `onPanChange` are diff-based.** They fire when the value actually
-   changes, so they no longer report `1` and `(0, 0)` at mount, and a redundant `resetZoom()`
-   at the default view reports nothing.
-8. **`onDrawingChange` no longer fires at mount.** It is reported from the pointer handlers
-   that own the transition, so the spurious `false` before the user had touched the canvas
-   is gone.
-9. **The mask canvas holds coverage, not colour.** Masked pixels are `maskColor` at full
-   alpha and everything else is fully transparent — there is no white "background" value any
-   more. Erasing removes coverage (`destination-out`) instead of painting white over it,
-   `toMask` classifies by alpha instead of RGB, and `initialMask` is converted into that
-   representation rather than drawn over a white fill. This fixes erasing (which used to
-   smear white across the image and never unmask the export), `maskColor: '#000000'` (which
-   exported as blank), retinting a mask painted in the default white, the white fringes left
-   on any `maskColor` with `r === 255`, and the `onMaskChange` → `initialMask` round trip
-   (which used to come back masked everywhere). If you paint into `maskCanvas` yourself, use
-   alpha rather than a background colour.
+6. **A re-fit preserves your zoom.** `scale` and `transform.scale` used to be separate state that disagreed: the mount fit wrote the transform without touching `scale`, so `scale={2}` rendered zoomed but could not be panned. They are one value now — an initial scale above 1 both renders and pans, and a container resize recentres the pan while keeping the zoom instead of silently discarding it.
+7. **`onScaleChange` and `onPanChange` are diff-based.** They fire when the value actually changes, so they no longer report `1` and `(0, 0)` at mount, and a redundant `resetZoom()` at the default view reports nothing.
+8. **`onDrawingChange` no longer fires at mount.** It is reported from the pointer handlers that own the transition, so the spurious `false` before the user had touched the canvas is gone.
+9. **The mask canvas holds coverage, not colour.** Masked pixels are `maskColor` at full alpha and everything else is fully transparent — there is no white "background" value any more. Erasing removes coverage (`destination-out`) instead of painting white over it, `toMask` classifies by alpha instead of RGB, and `initialMask` is converted into that representation rather than drawn over a white fill. This fixes erasing (which used to smear white across the image and never unmask the export), `maskColor: '#000000'` (which exported as blank), retinting a mask painted in the default white, the white fringes left on any `maskColor` with `r === 255`, and the `onMaskChange` → `initialMask` round trip (which used to come back masked everywhere). If you paint into `maskCanvas` yourself, use alpha rather than a background colour.
+10. **`UseMaskEditorReturn` gained the auto-selection members.** `mode`, `setMode`, `autoSelectStatus`, `isDetecting` and `selectAt` are now part of the hook return, the context value and the ref surface. Purely additive unless you pin that surface exactly.
 
 ### Earlier breaking changes (from `26.8.x`)
 
-1. **`history` is now `historyLength`.** The hook used to hand back the raw `ImageData[]`,
-   which kept every retained undo state alive for as long as you held the hook's return
-   value. If you only rendered a count, swap the property:
+1. **`history` is now `historyLength`.** The hook used to hand back the raw `ImageData[]`, which kept every retained undo state alive for as long as you held the hook's return value. If you only rendered a count, swap the property:
    ```diff
    - <span>States: {history.length}</span>
    + <span>States: {historyLength}</span>
    ```
-2. **`maxHistorySize` is now `maxHistoryBytes`.** Entries are full uncompressed RGBA
-   buffers, so a count-based cap scaled with canvas area — 50 states of a 1602×900 canvas
-   is roughly 288 MB. The budget is now expressed in bytes and defaults to 64 MB, so a
-   large canvas keeps fewer states and a small one keeps more. At least one state is always
-   retained.
-3. **`setScale` clamps and moves the view.** It used to be the raw state setter, so it
-   changed `scale` without touching `transform` — leaving `effectiveScale` and the rendered
-   CSS transform disagreeing. It now takes a plain `number`, clamps to
-   `[minScale, maxScale]`, and moves the transform with it. Updater functions are no longer
-   accepted:
+2. **`maxHistorySize` is now `maxHistoryBytes`.** Entries are full uncompressed RGBA buffers, so a count-based cap scaled with canvas area — 50 states of a 1602×900 canvas is roughly 288 MB. The budget is now expressed in bytes and defaults to 64 MB, so a large canvas keeps fewer states and a small one keeps more. At least one state is always retained.
+3. **`setScale` clamps and moves the view.** It used to be the raw state setter, so it changed `scale` without touching `transform` — leaving `effectiveScale` and the rendered CSS transform disagreeing. It now takes a plain `number`, clamps to `[minScale, maxScale]`, and moves the transform with it. Updater functions are no longer accepted:
    ```diff
    - setScale((s) => s + 0.2);
    + zoomIn(); // or setScale(scale + 0.2)
    ```
-4. **Headless consumers should spread `containerProps`.** `useMaskEditor` now returns a
-   `containerProps` bundle (ref, `role`, `tabIndex`, key handling, focus-on-mousedown) in
-   place of the bare `containerRef`. This fixes `keyboardScope: 'container'` for
-   `MaskEditorProvider` consumers, for whom the focus half of it previously did nothing:
+4. **Headless consumers should spread `containerProps`.** `useMaskEditor` now returns a `containerProps` bundle (ref, `role`, `tabIndex`, key handling, focus-on-mousedown) in place of the bare `containerRef`. This fixes `keyboardScope: 'container'` for `MaskEditorProvider` consumers, for whom the focus half of it previously did nothing:
    ```diff
    - <div ref={containerRef}>
    + <div {...containerProps}>
    ```
-5. **`MaskEditorLayers` replaces hand-rolled canvas stacks.** The stacking, z-order,
-   pointer-events and blend-mode contract is exported now, so a headless layout no longer
-   has to re-derive it (and silently lose mask opacity or blend mode). Use
-   `maskEditorLayerStyles(...)` if you need to place the canvases yourself.
+5. **`MaskEditorLayers` replaces hand-rolled canvas stacks.** The stacking, z-order, pointer-events and blend-mode contract is exported now, so a headless layout no longer has to re-derive it (and silently lose mask opacity or blend mode). Use `maskEditorLayerStyles(...)` if you need to place the canvases yourself.
 6. **`restoreFromHistory` is gone** from `useHistory`'s return. Use `undo`/`redo`.
-
----
 
 ## 🔀 Migrating from `react-canvas-masker` 1.x
 
 1. **Rename the dependency** to `react-canvas-ai` and update every import.
-2. **Delete the stylesheet import.** `import 'react-canvas-masker/dist/style.css'` no
-   longer exists and is no longer needed.
-3. **Drop ref casts.** Refs are now typed `RefObject<T | null>`, matching what
-   `useRef<T>(null)` actually returns under React 19:
+2. **Delete the stylesheet import.** `import 'react-canvas-masker/dist/style.css'` no longer exists and is no longer needed.
+3. **Drop ref casts.** Refs are now typed `RefObject<T | null>`, matching what `useRef<T>(null)` actually returns under React 19:
    ```diff
    - const canvas = useRef<MaskEditorCanvasRef>(null) as RefObject<MaskEditorCanvasRef>;
    + const canvas = useRef<MaskEditorCanvasRef>(null);
    ```
-4. **Re-check your version range.** Versioning is CalVer now — see
-   [Installation](#-installation).
+4. **Re-check your version range.** Versioning is CalVer now — see [Installation](#️-installation).
 
-Fixed along the way: `ref.current.maskCanvas` used to stay `null` forever, losing focus
-mid-pan left the page stuck on `cursor: grabbing`, and `toMask` crashed when a 2D context
-was unavailable.
-
----
+Fixed along the way: `ref.current.maskCanvas` used to stay `null` forever, losing focus mid-pan left the page stuck on `cursor: grabbing`, and `toMask` crashed when a 2D context was unavailable.
 
 ## 🛠️ Development
 
@@ -652,7 +583,7 @@ was unavailable.
 pnpm install
 pnpm dev:playground   # library in watch mode + playground on :3000
 pnpm check            # what CI runs: biome + typecheck + tests
-pnpm build            # ESM + CJS + .d.ts
+pnpm build            # ESM + CJS + .d.ts (+ the lazy SAM chunk)
 ```
 
 Releases are cut by pushing a CalVer tag:
@@ -662,64 +593,36 @@ git tag 26.8.0
 git push origin 26.8.0
 ```
 
-The release workflow stamps that tag onto `packages/react-canvas-ai/package.json` (via
-`scripts/set-version.mjs`) and publishes to npm. The version in the manifest on `main` is
-only a placeholder between releases — the tag is the source of truth.
+The release workflow stamps that tag onto `packages/react-canvas-ai/package.json` (via `scripts/set-version.mjs`) and publishes to npm. The version in the manifest on `main` is only a placeholder between releases — the tag is the source of truth.
 
 ### Why the build is set up this way
 
 Worth recording, because it is a decision to revisit rather than rediscover.
 
-TypeScript 7.0 is a ground-up rewrite in Go, and it does **not** yet expose the
-JavaScript compiler API (`import * as ts from 'typescript'`) or emit declarations. That
-breaks every tool that generates `.d.ts` through the compiler — `vite-plugin-dts`,
-`tsup --dts`, api-extractor. It is not a Vite limitation: ordinary Vite apps run fine on
-TS 7, and the playground here does.
+TypeScript 7.0 is a ground-up rewrite in Go, and it does **not** yet expose the JavaScript compiler API (`import * as ts from 'typescript'`) or emit declarations. That breaks every tool that generates `.d.ts` through the compiler — `vite-plugin-dts`, `tsup --dts`, api-extractor. It is not a Vite limitation: ordinary Vite apps run fine on TS 7, and the playground here does.
 
-So this package sets `isolatedDeclarations: true` and lets **tsdown** generate
-declarations with oxc (Rust), which never loads the TypeScript compiler. The cost is
-explicit type annotations on exported symbols.
+So this package sets `isolatedDeclarations: true` and lets **tsdown** generate declarations with oxc (Rust), which never loads the TypeScript compiler. The cost is explicit type annotations on exported symbols.
 
-**What changes in TS 7.1:** a new compiler API is being built for 7.1, with declaration
-emit on the list. Once it ships, `vite-plugin-dts` and friends can support TS 7 and this
-constraint disappears.
+**What changes in TS 7.1:** a new compiler API is being built for 7.1, with declaration emit on the list. Once it ships, `vite-plugin-dts` and friends can support TS 7 and this constraint disappears.
 
-**The decision to make then:** keep `isolatedDeclarations` (faster, parallel, Rust-speed
-`.d.ts`, but the annotations must be maintained) or drop it and let the compiler infer
-declarations (no annotations, slower builds). Note that `isolatedDeclarations` shipped in
-TS 5.5, well before the Go rewrite — it is a deliberate design direction, not a TS 7
-workaround — so **both options stay valid long term**, and the annotations are not wasted
-either way, since explicit public return types are good API hygiene regardless.
+**The decision to make then:** keep `isolatedDeclarations` (faster, parallel, Rust-speed `.d.ts`, but the annotations must be maintained) or drop it and let the compiler infer declarations (no annotations, slower builds). Note that `isolatedDeclarations` shipped in TS 5.5, well before the Go rewrite — it is a deliberate design direction, not a TS 7 workaround — so **both options stay valid long term**, and the annotations are not wasted either way, since explicit public return types are good API hygiene regardless.
 
 Sources worth re-checking when the time comes:
 [TypeScript 7 progress](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/) ·
 [tsdown dts options](https://tsdown.dev/options/dts)
 
----
-
 ## 📜 Notes
 
 - All mask operations are done on a separate canvas for performance
-- The mask is returned as a **black-and-white PNG (base64)** — white where masked, black where
-  not. A pixel counts as masked when the mask layer is at least half covered there, so
-  anti-aliased stroke edges resolve on export the same way they look on screen
-- Supports up to 50 undo/redo steps
-- Forked and modernized from [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor)
+- The mask is returned as a **black-and-white PNG (base64)** — white where masked, black where not. A pixel counts as masked when the mask layer is at least half covered there, so anti-aliased stroke edges resolve on export the same way they look on screen
+- Undo history is byte-budgeted (64 MB by default), so a large canvas keeps fewer states and a small one keeps more
+- SAM inference runs on the main thread through ONNX Runtime's own WASM workers; a click typically resolves in well under a second on a warm model
+- Forked and modernized from [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor), with the auto-selection features folded in from [`react-canvas-masker-auto-selection`](https://github.com/vegidio/react-canvas-masker-auto-selection)
 
----
+## 📝 License
 
-## 📖 License
+**react-canvas-ai** is released under the Apache 2.0 License. See [LICENSE](LICENSE) for details.
 
-Apache-2.0 — see [LICENSE](./LICENSE).
+## 👨🏾‍💻 Author
 
----
-
-## 🙌 About This Fork
-
-This is a cleaned-up and improved version of an unmaintained package, refactored into a hook-first, React 18+ friendly library with a focus on AI tooling and performance. Key enhancements include:
-
-- Advanced zoom and pan capabilities for precise editing
-- Optimized event handling and rendering
-- Responsive design that adapts to container dimensions
-- Improved coordinate calculations for pixel-perfect precision
-- Enhanced user controls with intuitive keyboard and mouse interactions
+Vinicius Egidio ([vinicius.io](https://vinicius.io))
