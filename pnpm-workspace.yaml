@@ -7,4 +7,5 @@ strictPeerDependencies: false
 preferWorkspacePackages: true
 
 allowBuilds:
+  protobufjs: false
   simple-git-hooks: true

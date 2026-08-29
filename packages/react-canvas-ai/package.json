@@ -21,7 +21,11 @@
         "image",
         "manipulation",
         "inpainting",
-        "ai"
+        "ai",
+        "segmentation",
+        "sam",
+        "onnx",
+        "auto-selection"
     ],
     "type": "module",
     "main": "./dist/index.cjs",
@@ -64,8 +68,14 @@
         "postpack": "rm -f ./README.md ./LICENSE"
     },
     "peerDependencies": {
+        "onnxruntime-web": "^1.24.3",
         "react": "^19.2.0",
         "react-dom": "^19.2.0"
+    },
+    "peerDependenciesMeta": {
+        "onnxruntime-web": {
+            "optional": true
+        }
     },
     "devDependencies": {
         "@arethetypeswrong/cli": "^0.18.5",
@@ -77,6 +87,7 @@
         "@types/react-dom": "^19.2.4",
         "@vitest/coverage-v8": "^4.1.11",
         "jsdom": "^30.0.1",
+        "onnxruntime-web": "^1.29.0",
         "publint": "^0.3.24",
         "react": "^19.2.8",
         "react-dom": "^19.2.8",
