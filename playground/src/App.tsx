@@ -1,7 +1,6 @@
 import { useMemo, useRef, useState } from 'react';
 import type { AutoSelectStatus, MaskEditorCanvasRef, MaskEditorMode, SamConfig } from 'react-canvas-ai';
 import { MaskEditor, toMask } from 'react-canvas-ai';
-import MaskEditorProviderExample from './MaskEditorProviderExample';
 
 const SAMPLE_IMAGE =
     'https://images.unsplash.com/photo-1724745523440-e9a3982d8994?q=80&w=2367&auto=format&fit=crop&w=900&q=80';
@@ -188,10 +187,6 @@ const App = () => {
                     </figure>
                 </section>
             )}
-
-            <section className='provider-example'>
-                <MaskEditorProviderExample />
-            </section>
 
             {mask && <img src={mask} className='mask-preview' alt='Live mask preview' />}
         </main>
