@@ -1,6 +1,8 @@
+import type { DetectedObject } from '../hooks/useAutoSelect';
 import type { Rgb } from '../utils';
 import type { Point } from './geometry';
 import { MASK_THRESHOLD } from '../utils';
+import { createCanvas } from './sam/createCanvas';
 
 /** Shown when the source image reports no usable dimensions. */
 export const FALLBACK_SIZE: Point = { x: 300, y: 200 };
@@ -126,6 +128,41 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
     }
 
     ctx.putImageData(imageData, 0, 0);
+};
+
+/**
+ * Composites a detected object's silhouette onto the mask layer, upholding the same coverage
+ * invariant the brush does: painting lands `color` at the silhouette's alpha, erasing subtracts
+ * that alpha. The silhouette's own RGB is ignored — `source-in` on a scratch canvas replaces it
+ * with the editor's live colour, so a detected mask retints, exports and undoes exactly like
+ * hand-painted strokes. The plugin this replaces took a separate style object instead, which
+ * meant every consumer had to pass `maskColor` twice and keep the two in agreement.
+ *
+ * The composite operation is saved and restored for the same reason {@link paintMaskDot} does
+ * it: the mask context is shared, and leaving `destination-out` in force would turn the next
+ * peer draw into an erase.
+ */
+export const applyDetectedMask = (
+    ctx: CanvasRenderingContext2D,
+    size: Point,
+    detected: DetectedObject,
+    color: string,
+    mode: MaskDotMode = 'paint',
+): void => {
+    const { mask } = detected;
+    const scratch = createCanvas(mask.width, mask.height);
+    const scratchCtx = scratch.getContext('2d');
+    if (!scratchCtx) return;
+
+    scratchCtx.putImageData(mask, 0, 0);
+    scratchCtx.globalCompositeOperation = 'source-in';
+    scratchCtx.fillStyle = color;
+    scratchCtx.fillRect(0, 0, mask.width, mask.height);
+
+    const previous = ctx.globalCompositeOperation;
+    ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+    ctx.drawImage(scratch, 0, 0, size.x, size.y);
+    ctx.globalCompositeOperation = previous;
 };
 
 /**

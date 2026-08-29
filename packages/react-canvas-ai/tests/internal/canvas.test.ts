@@ -1,14 +1,19 @@
 import type { Mock } from 'vitest';
 import { describe, expect, it, vi } from 'vitest';
+import type { DetectedObject } from '../../src/hooks/useAutoSelect';
 import {
+    applyDetectedMask,
     applyMaskImage,
     computeTargetSize,
     drawCursorCircle,
     paintMaskDot,
     recolorMask,
 } from '../../src/internal/canvas';
+import { createCanvas } from '../../src/internal/sam/createCanvas';
 import { toMask } from '../../src/utils';
 import { captureScratchCanvas, makeSeededCanvas } from '../helpers/canvas';
+
+vi.mock('../../src/internal/sam/createCanvas');
 
 const makeContext = (pixels: number[] = []) => {
     const imageData = { data: Uint8ClampedArray.from(pixels), width: 1, height: 1 } as ImageData;
@@ -193,6 +198,84 @@ describe('mask round trip', () => {
         // threshold below half this would not be a fixed point: each round trip would grow every
         // stroke by its own anti-aliased rim.
         expect([...imageData.data]).toEqual([10, 20, 30, 255, 0, 0, 0, 0, 10, 20, 30, 255, 0, 0, 0, 0]);
+    });
+});
+
+describe('applyDetectedMask', () => {
+    const makeDetected = (): DetectedObject => ({
+        id: 'sam-1',
+        score: 0.9,
+        bbox: { x: 0, y: 0, width: 2, height: 2 },
+        mask: new ImageData(2, 2),
+    });
+
+    const setup = () => {
+        const scratchCtx = {
+            putImageData: vi.fn(),
+            fillRect: vi.fn(),
+            fillStyle: '',
+            globalCompositeOperation: 'source-over',
+        };
+        const scratch = { getContext: vi.fn(() => scratchCtx) } as unknown as HTMLCanvasElement;
+        vi.mocked(createCanvas).mockReturnValue(scratch);
+
+        const { ctx } = makeContext();
+        return { ctx, scratch, scratchCtx };
+    };
+
+    it('tints the silhouette with the live colour, discriminating on alpha', () => {
+        const { ctx, scratchCtx } = setup();
+        const detected = makeDetected();
+
+        // `source-in` has to be in force when the tint lands, not merely at some point.
+        const opAtFill: string[] = [];
+        scratchCtx.fillRect.mockImplementation(() => opAtFill.push(scratchCtx.globalCompositeOperation));
+
+        applyDetectedMask(ctx, { x: 8, y: 4 }, detected, '#ff0000');
+
+        expect(scratchCtx.putImageData).toHaveBeenCalledWith(detected.mask, 0, 0);
+        expect(scratchCtx.fillStyle).toBe('#ff0000');
+        expect(opAtFill).toEqual(['source-in']);
+    });
+
+    it('scales the silhouette to the editor canvas size', () => {
+        const { ctx, scratch } = setup();
+        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+
+        expect(ctx.drawImage).toHaveBeenCalledWith(scratch, 0, 0, 8, 4);
+    });
+
+    it('paints with source-over and restores the composite mode the caller had set', () => {
+        const { ctx } = setup();
+        ctx.globalCompositeOperation = 'multiply';
+
+        const opAtDraw: string[] = [];
+        (ctx.drawImage as Mock).mockImplementation(() => opAtDraw.push(ctx.globalCompositeOperation));
+
+        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+
+        expect(opAtDraw).toEqual(['source-over']);
+        expect(ctx.globalCompositeOperation).toBe('multiply');
+    });
+
+    it('erases by subtracting the silhouette coverage', () => {
+        const { ctx } = setup();
+
+        const opAtDraw: string[] = [];
+        (ctx.drawImage as Mock).mockImplementation(() => opAtDraw.push(ctx.globalCompositeOperation));
+
+        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff', 'erase');
+
+        expect(opAtDraw).toEqual(['destination-out']);
+        expect(ctx.globalCompositeOperation).toBe('source-over');
+    });
+
+    it('bails when the scratch canvas yields no context', () => {
+        const { ctx } = setup();
+        vi.mocked(createCanvas).mockReturnValue({ getContext: vi.fn(() => null) } as unknown as HTMLCanvasElement);
+
+        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+        expect(ctx.drawImage).not.toHaveBeenCalled();
     });
 });
 
