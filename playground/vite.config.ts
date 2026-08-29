@@ -6,4 +6,8 @@ export default defineConfig({
     server: {
         port: 3000,
     },
+    optimizeDeps: {
+        // ORT's wasm loader breaks under Vite's dependency pre-bundling.
+        exclude: ['onnxruntime-web'],
+    },
 });

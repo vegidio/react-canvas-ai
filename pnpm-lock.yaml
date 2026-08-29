@@ -77,6 +77,9 @@ importers:
 
   playground:
     dependencies:
+      onnxruntime-web:
+        specifier: ^1.29.0
+        version: 1.29.0
       react:
         specifier: ^19.2.8
         version: 19.2.8
