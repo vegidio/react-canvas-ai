@@ -1,9 +1,13 @@
 import { type ComponentProps, StrictMode } from 'react';
 import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SamEngine } from '../src/internal/sam/engine';
 import { MaskEditor, type MaskEditorCanvasRef } from '../src';
+import { createSamEngine } from '../src/internal/sam/engine';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC, settle } from './helpers/image';
+
+vi.mock('../src/internal/sam/engine', () => ({ createSamEngine: vi.fn() }));
 
 /**
  * StrictMode double-invokes effects and state updaters. Every bug this suite guards against
@@ -71,6 +75,28 @@ describe('StrictMode', () => {
 
         unmount();
         expect(document.body.style.cursor).toBe('');
+    });
+
+    it('warms one engine per model config despite doubled effects', async () => {
+        const engine: SamEngine = {
+            prepare: vi.fn(async () => {}),
+            detect: vi.fn(async () => undefined),
+            dispose: vi.fn(),
+        };
+        vi.mocked(createSamEngine).mockReset().mockReturnValue(engine);
+
+        const { unmount } = renderEditor({
+            autoSelect: { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' }, preload: true },
+        });
+        await settle();
+
+        // The doubled mount disposes the first engine and recreates on demand; what matters
+        // is that only one is live afterwards and only one warm-up survives the churn.
+        expect(engine.prepare).toHaveBeenCalledTimes(1);
+
+        unmount();
+        // Every created engine got disposed — nothing keeps ORT sessions alive after unmount.
+        expect(vi.mocked(engine.dispose).mock.calls.length).toBeGreaterThan(0);
     });
 
     it('stops responding to shortcuts once unmounted', async () => {

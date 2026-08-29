@@ -1,5 +1,6 @@
 import type { RefObject } from 'react';
 import { useCallback, useEffect } from 'react';
+import type { MaskEditorMode } from '../hooks/useMaskEditor';
 import type { Point } from './geometry';
 import { drawCursorCircle } from './canvas';
 import { useLatest } from './useLatest';
@@ -51,6 +52,8 @@ export type BrushCursorOptions = {
     cursorSizeRef: RefObject<number>;
     isPanning: boolean;
     isSpaceKeyDown: boolean;
+    /** A ref rather than the value, so mode flips never re-attach the native listener. */
+    modeRef: RefObject<MaskEditorMode>;
     paintDab: (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
 };
 
@@ -67,9 +70,13 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
         if (!cursorCanvas) return;
 
         const handleMouseMove = (evt: MouseEvent) => {
-            const { paintCursor, getImageCoordinates, cursorSizeRef, isPanning, isSpaceKeyDown, paintDab } =
+            const { paintCursor, getImageCoordinates, cursorSizeRef, isPanning, isSpaceKeyDown, modeRef, paintDab } =
                 optionsRef.current;
             if (isPanning) return;
+
+            // In auto mode the pointer is a crosshair, not a brush: no outline, no dabs. The
+            // editor clears the cursor layer on the mode flip, so nothing stale lingers here.
+            if (modeRef.current === 'auto') return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
             paintCursor(x, y, cursorSizeRef.current);
@@ -88,6 +95,8 @@ export type BrushSizeWheelOptions = {
     paintCursor: PaintCursor;
     getImageCoordinates: (clientX: number, clientY: number) => Point;
     cursorSizeRef: RefObject<number>;
+    /** See {@link BrushCursorOptions.modeRef}. */
+    modeRef: RefObject<MaskEditorMode>;
     setCursorSize: (size: number) => void;
     onCursorSizeChange: (size: number) => void;
 };
@@ -103,14 +112,25 @@ export const useBrushSizeWheel = (
         if (!cursorCanvas) return;
 
         const handleWheel = (evt: WheelEvent) => {
-            const { enabled, paintCursor, getImageCoordinates, cursorSizeRef, setCursorSize, onCursorSizeChange } =
-                optionsRef.current;
+            const {
+                enabled,
+                paintCursor,
+                getImageCoordinates,
+                cursorSizeRef,
+                modeRef,
+                setCursorSize,
+                onCursorSizeChange,
+            } = optionsRef.current;
 
             // Gated here rather than around the listener, so toggling the prop does not
             // detach and reattach. Returning before `preventDefault` leaves the event to
             // propagate exactly as it did when no listener was registered at all.
             if (!enabled) return;
             if (evt.ctrlKey || evt.metaKey) return;
+
+            // No brush in auto mode: resizing it would be an invisible state mutation the
+            // user only discovers back in paint mode.
+            if (modeRef.current === 'auto') return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
             const newSize = Math.max(1, cursorSizeRef.current + (evt.deltaY > 0 ? -1 : 1));

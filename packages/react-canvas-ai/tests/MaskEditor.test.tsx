@@ -1,11 +1,26 @@
 import { type ComponentProps, createRef } from 'react';
-import { fireEvent, render } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { SamEngine } from '../src/internal/sam/engine';
 import { MaskEditor, type MaskEditorCanvasRef, MaskEditorDefaults } from '../src';
+import { createSamEngine } from '../src/internal/sam/engine';
 import { canvases } from './helpers/canvas';
 import { installImageMock, SRC } from './helpers/image';
 
+vi.mock('../src/internal/sam/engine', () => ({ createSamEngine: vi.fn() }));
+
 installImageMock({ width: 400, height: 200 });
+
+const AUTO = { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' } };
+
+beforeEach(() => {
+    const engine: SamEngine = {
+        prepare: vi.fn(async () => {}),
+        detect: vi.fn(async () => undefined),
+        dispose: vi.fn(),
+    };
+    vi.mocked(createSamEngine).mockReset().mockReturnValue(engine);
+});
 
 const renderEditor = (props: Partial<ComponentProps<typeof MaskEditor>> = {}) => {
     const onDrawingChange = vi.fn();
@@ -134,7 +149,17 @@ describe('imperative ref', () => {
         renderEditor({ ref });
 
         expect(ref.current).not.toBeNull();
-        for (const method of ['undo', 'redo', 'clear', 'resetZoom', 'setPan', 'zoomIn', 'zoomOut'] as const) {
+        for (const method of [
+            'undo',
+            'redo',
+            'clear',
+            'resetZoom',
+            'setPan',
+            'zoomIn',
+            'zoomOut',
+            'setMode',
+            'selectAt',
+        ] as const) {
             expect(typeof ref.current?.[method]).toBe('function');
         }
     });
@@ -195,6 +220,42 @@ describe('imperative ref', () => {
         // Previously this snapshotted `null` at handle-creation time and never updated,
         // because the dep array only listed the (stable) ref object.
         expect(ref.current?.maskCanvas).toBe(canvases(root).mask);
+    });
+
+    it('forces paint mode through the handle when autoSelect is not configured', () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const ref = createRef<MaskEditorCanvasRef>();
+        renderEditor({ ref });
+
+        expect(ref.current?.mode).toBe('paint');
+        expect(ref.current?.autoSelectStatus).toBe('idle');
+
+        act(() => ref.current?.setMode('auto'));
+        expect(ref.current?.mode).toBe('paint');
+        expect(warn).toHaveBeenCalled();
+    });
+
+    // Mode rides the same live mirror as the style getters: flipping it must neither hand
+    // the consumer a stale value nor a fresh handle object.
+    it('tracks mode changes live without changing the handle identity', () => {
+        const ref = createRef<MaskEditorCanvasRef>();
+        renderEditor({ ref, autoSelect: AUTO });
+        const handle = ref.current;
+
+        act(() => ref.current?.setMode('auto'));
+
+        expect(ref.current).toBe(handle);
+        expect(ref.current?.mode).toBe('auto');
+    });
+
+    it('shows a crosshair on the cursor layer in auto mode', () => {
+        const ref = createRef<MaskEditorCanvasRef>();
+        const { root } = renderEditor({ ref, autoSelect: AUTO });
+
+        expect(canvases(root).cursor.style.cursor).toBe('default');
+
+        act(() => ref.current?.setMode('auto'));
+        expect(canvases(root).cursor.style.cursor).toBe('crosshair');
     });
 
     it('methods are callable without throwing', () => {

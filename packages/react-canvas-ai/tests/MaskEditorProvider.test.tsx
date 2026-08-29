@@ -54,6 +54,7 @@ describe('MaskEditorProvider', () => {
 
         expect(Object.keys(ctx ?? {}).sort()).toEqual(
             [
+                'autoSelectStatus',
                 'canvasRef',
                 'clear',
                 'containerProps',
@@ -65,6 +66,7 @@ describe('MaskEditorProvider', () => {
                 'handleMouseUp',
                 'historyIndex',
                 'historyLength',
+                'isDetecting',
                 'isDrawing',
                 'isPanning',
                 'isZoomKeyDown',
@@ -73,10 +75,13 @@ describe('MaskEditorProvider', () => {
                 'maskCanvasRef',
                 'maskColor',
                 'maskOpacity',
+                'mode',
                 'redo',
                 'resetZoom',
                 'scale',
+                'selectAt',
                 'setCursorSize',
+                'setMode',
                 'setPan',
                 'setScale',
                 'size',

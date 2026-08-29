@@ -86,13 +86,19 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
         effectiveScale,
         zoomIn,
         zoomOut,
+        mode,
+        setMode,
+        autoSelectStatus,
+        isDetecting,
+        selectAt,
     } = useMaskEditor(hookProps);
 
     // Mirrored so the style getters below can stay live without listing these values as
     // dependencies of the handle: `cursorSize` changes on every wheel tick while the user
     // resizes the brush, and rebuilding `ref.current` that often would break any consumer
-    // holding on to the object it was handed.
-    const styleRef = useLatest({ maskColor, maskOpacity, maskBlendMode, cursorSize });
+    // holding on to the object it was handed. `mode` and `autoSelectStatus` ride along for
+    // the same reason — status churns through a whole lifecycle per model load.
+    const styleRef = useLatest({ maskColor, maskOpacity, maskBlendMode, cursorSize, mode, autoSelectStatus });
 
     // Expose API via ref if provided
     useImperativeHandle(
@@ -113,6 +119,12 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
             get cursorSize() {
                 return styleRef.current.cursorSize;
             },
+            get mode() {
+                return styleRef.current.mode;
+            },
+            get autoSelectStatus() {
+                return styleRef.current.autoSelectStatus;
+            },
             undo,
             redo,
             clear,
@@ -120,8 +132,10 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
             setPan,
             zoomIn,
             zoomOut,
+            setMode,
+            selectAt,
         }),
-        [maskCanvasRef, undo, redo, clear, resetZoom, setPan, zoomIn, zoomOut],
+        [maskCanvasRef, undo, redo, clear, resetZoom, setPan, zoomIn, zoomOut, setMode, selectAt],
     );
 
     const canvasLayerStyle = useMemo<CSSProperties>(() => {
@@ -143,7 +157,18 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
         };
     }, [transform, effectiveScale, isPanning, size]);
 
-    const containerCursorStyle = isPanning ? 'grabbing' : isZoomKeyDown ? 'zoom-in' : 'default';
+    // Pan and zoom gestures outrank the mode: mid-pan feedback matters more than the
+    // standing crosshair. `progress` (not `wait`) while detecting — the editor still accepts
+    // pans and zooms, it only queues no second detection.
+    const containerCursorStyle = isPanning
+        ? 'grabbing'
+        : isZoomKeyDown
+          ? 'zoom-in'
+          : mode === 'auto'
+            ? isDetecting
+                ? 'progress'
+                : 'crosshair'
+            : 'default';
 
     // Shared with the exported `MaskEditorLayers`, so a headless consumer and this component
     // cannot drift apart on the stacking contract.

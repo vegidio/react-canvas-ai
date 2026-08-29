@@ -9,6 +9,7 @@ describe('public API', () => {
             'MaskEditorDefaults',
             'MaskEditorLayers',
             'MaskEditorProvider',
+            'clearSamCache',
             'maskEditorLayerStyles',
             'toMask',
             'useMaskEditor',

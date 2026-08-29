@@ -1,9 +1,21 @@
 import { useState } from 'react';
 import { act, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { UseMaskEditorProps } from '../src/hooks/useMaskEditor';
+import type { AutoSelectOptions, DetectedObject } from '../src/hooks/useAutoSelect';
+import type { MaskEditorMode, UseMaskEditorProps } from '../src/hooks/useMaskEditor';
+import type { SamEngine } from '../src/internal/sam/engine';
 import { useMaskEditor } from '../src/hooks/useMaskEditor';
+import { applyDetectedMask } from '../src/internal/canvas';
+import { createSamEngine } from '../src/internal/sam/engine';
 import { installImageMock, SRC, settle } from './helpers/image';
+
+vi.mock('../src/internal/sam/engine', () => ({ createSamEngine: vi.fn() }));
+// The compositor is unit-tested on its own; mocking it here keeps these tests about the
+// wiring — what got committed, with which mode and colour.
+vi.mock('../src/internal/canvas', async (importOriginal) => ({
+    ...(await importOriginal<object>()),
+    applyDetectedMask: vi.fn(),
+}));
 
 beforeEach(() => {
     vi.useFakeTimers();
@@ -643,5 +655,285 @@ describe('changing src', () => {
         // Regression guard: the load effect used to have an empty cleanup, so the superseded
         // image could resolve last and win.
         expect(sizes[sizes.length - 1]).toEqual({ x: 400, y: 400 });
+    });
+});
+
+describe('auto-selection', () => {
+    const AUTO: AutoSelectOptions = { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' } };
+
+    const DETECTED: DetectedObject = {
+        id: 'sam-1',
+        score: 0.9,
+        bbox: { x: 0, y: 0, width: 2, height: 2 },
+        mask: new ImageData(2, 2),
+    };
+
+    let engine: SamEngine;
+
+    beforeEach(() => {
+        engine = {
+            prepare: vi.fn(async () => {}),
+            detect: vi.fn(async () => DETECTED),
+            dispose: vi.fn(),
+        };
+        // `restoreAllMocks` in the shared teardown only touches spies, so the module
+        // mocks keep their call history unless reset here.
+        vi.mocked(createSamEngine).mockReset().mockReturnValue(engine);
+        vi.mocked(applyDetectedMask).mockReset();
+    });
+
+    const mouse = (el: HTMLElement, type: 'mousedown' | 'mouseup', init: MouseEventInit = {}) =>
+        act(() => {
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+        });
+
+    const click = async (el: HTMLElement, init: MouseEventInit = {}) => {
+        mouse(el, 'mousedown', init);
+        mouse(el, 'mouseup', init);
+        await settle();
+    };
+
+    it('forces paint mode and warns when autoSelect is not configured', async () => {
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const { state } = setup();
+        await settle();
+
+        expect(state().mode).toBe('paint');
+        expect(state().autoSelectStatus).toBe('idle');
+
+        act(() => state().setMode('auto'));
+        expect(state().mode).toBe('paint');
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('autoSelect'));
+    });
+
+    it('enters auto mode through setMode and notifies once per change', async () => {
+        const onModeChange = vi.fn();
+        const { state } = setup({ autoSelect: AUTO, onModeChange });
+        await settle();
+
+        act(() => state().setMode('auto'));
+        expect(state().mode).toBe('auto');
+        expect(onModeChange).toHaveBeenCalledTimes(1);
+        expect(onModeChange).toHaveBeenCalledWith('auto');
+
+        act(() => state().setMode('auto'));
+        expect(onModeChange).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows the mode prop when it changes', async () => {
+        const captured: { current?: ReturnType<typeof useMaskEditor> } = {};
+        let setModeProp: (mode: MaskEditorMode) => void = () => {};
+
+        const Harness = () => {
+            const [modeProp, set] = useState<MaskEditorMode>('paint');
+            setModeProp = set;
+            const state = useMaskEditor({ src: SRC, onDrawingChange: vi.fn(), autoSelect: AUTO, mode: modeProp });
+            captured.current = state;
+            return (
+                <div {...state.containerProps}>
+                    <canvas ref={state.canvasRef} />
+                    <canvas ref={state.maskCanvasRef} />
+                    <canvas
+                        ref={state.cursorCanvasRef}
+                        onMouseDown={state.handleMouseDown}
+                        onMouseUp={state.handleMouseUp}
+                    />
+                </div>
+            );
+        };
+
+        render(<Harness />);
+        await settle();
+
+        act(() => setModeProp('auto'));
+        expect(captured.current?.mode).toBe('auto');
+    });
+
+    it('warms the model on the first entry into auto mode and keeps it warm after leaving', async () => {
+        const { state } = setup({ autoSelect: AUTO });
+        await settle();
+        expect(createSamEngine).not.toHaveBeenCalled();
+
+        act(() => state().setMode('auto'));
+        await settle();
+        expect(engine.prepare).toHaveBeenCalledTimes(1);
+
+        // Toggling back must not tear the model down — re-entering auto would otherwise
+        // re-download and re-encode every time.
+        act(() => state().setMode('paint'));
+        await settle();
+        expect(engine.dispose).not.toHaveBeenCalled();
+    });
+
+    it('warms as soon as the image decodes when preload is on', async () => {
+        setup({ autoSelect: { ...AUTO, preload: true } });
+        await settle();
+
+        expect(engine.prepare).toHaveBeenCalled();
+    });
+
+    it('suppresses brush dabs and drawing state in auto mode', async () => {
+        const { state, cursorCanvas, onDrawingChange } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+
+        const maskCtx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        const arc = vi.spyOn(maskCtx, 'arc');
+
+        act(() => {
+            cursorCanvas().dispatchEvent(
+                new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, buttons: 1 }),
+            );
+        });
+        mouse(cursorCanvas(), 'mousedown', { buttons: 1 });
+
+        expect(arc).not.toHaveBeenCalled();
+        expect(state().isDrawing).toBe(false);
+        expect(onDrawingChange).not.toHaveBeenCalled();
+    });
+
+    it('commits a click through history and reports the mask', async () => {
+        const onMaskChange = vi.fn();
+        const onObjectDetected = vi.fn();
+        const { state, cursorCanvas } = setup({ autoSelect: { ...AUTO, onObjectDetected }, onMaskChange });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+        onMaskChange.mockClear();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5 });
+
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(applyDetectedMask).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.anything(),
+            DETECTED,
+            '#ffffff',
+            'paint',
+        );
+        expect(state().historyLength).toBe(1);
+        expect(state().historyIndex).toBe(0);
+        expect(onMaskChange).toHaveBeenCalled();
+        expect(onObjectDetected).toHaveBeenCalledWith(DETECTED);
+    });
+
+    it('subtracts the detected object on shift-click', async () => {
+        const { state, cursorCanvas } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5, shiftKey: true });
+
+        expect(applyDetectedMask).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.anything(),
+            DETECTED,
+            '#ffffff',
+            'erase',
+        );
+    });
+
+    it('subtracts on a right-click too, matching paint-mode erase', async () => {
+        const { state, cursorCanvas } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5, button: 2 });
+
+        expect(applyDetectedMask).toHaveBeenCalledWith(
+            expect.anything(),
+            expect.anything(),
+            DETECTED,
+            '#ffffff',
+            'erase',
+        );
+    });
+
+    it('treats a press that travelled past the slop as a drag, not a click', async () => {
+        const { state, cursorCanvas } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        mouse(cursorCanvas(), 'mousedown', { clientX: 5, clientY: 5 });
+        mouse(cursorCanvas(), 'mouseup', { clientX: 50, clientY: 50 });
+        await settle();
+
+        expect(engine.detect).not.toHaveBeenCalled();
+    });
+
+    it('ignores clicks while a detection is in flight', async () => {
+        let release: (value: DetectedObject) => void = () => {};
+        vi.mocked(engine.detect).mockImplementation(() => new Promise((resolve) => (release = resolve)));
+
+        const { state, cursorCanvas } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5 });
+        await click(cursorCanvas(), { clientX: 6, clientY: 6 });
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await act(async () => release(DETECTED));
+    });
+
+    it('routes a failed click detection to onError', async () => {
+        const onError = vi.fn();
+        vi.mocked(engine.detect).mockRejectedValue(new Error('inference failed'));
+
+        const { state, cursorCanvas } = setup({ autoSelect: { ...AUTO, onError } });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5 });
+
+        expect(onError).toHaveBeenCalledWith(expect.objectContaining({ message: 'inference failed' }));
+        expect(applyDetectedMask).not.toHaveBeenCalled();
+    });
+
+    it('selectAt commits like a click and resolves with the detection', async () => {
+        const onMaskChange = vi.fn();
+        const { state } = setup({ autoSelect: AUTO, onMaskChange });
+        await settle();
+        onMaskChange.mockClear();
+
+        let detected: DetectedObject | undefined;
+        await act(async () => {
+            detected = await state().selectAt({ x: 3, y: 4 });
+        });
+
+        expect(detected).toBe(DETECTED);
+        expect(engine.detect).toHaveBeenCalledWith(
+            expect.anything(),
+            { x: 3, y: 4 },
+            expect.anything(),
+            expect.anything(),
+        );
+        expect(state().historyLength).toBe(1);
+        expect(onMaskChange).toHaveBeenCalled();
+    });
+
+    it('selectAt rejects when autoSelect is not configured', async () => {
+        const { state } = setup();
+        await settle();
+
+        await expect(state().selectAt({ x: 1, y: 1 })).rejects.toThrow(/autoSelect/);
+    });
+
+    it('undoes an auto selection like a stroke', async () => {
+        const { state, cursorCanvas } = setup({ autoSelect: AUTO });
+        await settle();
+        act(() => state().setMode('auto'));
+        await settle();
+
+        await click(cursorCanvas(), { clientX: 5, clientY: 5 });
+        expect(state().historyIndex).toBe(0);
+
+        act(() => state().undo());
+        expect(state().historyIndex).toBe(-1);
     });
 });
