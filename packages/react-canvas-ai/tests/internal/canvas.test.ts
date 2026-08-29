@@ -1,6 +1,5 @@
 import type { Mock } from 'vitest';
 import { describe, expect, it, vi } from 'vitest';
-import type { DetectedObject } from '../../src/hooks/useAutoSelect';
 import {
     applyDetectedMask,
     applyMaskImage,
@@ -9,11 +8,11 @@ import {
     paintMaskDot,
     recolorMask,
 } from '../../src/internal/canvas';
-import { createCanvas } from '../../src/internal/sam/createCanvas';
+import { createCanvas } from '../../src/internal/createCanvas';
 import { toMask } from '../../src/utils';
 import { captureScratchCanvas, makeSeededCanvas } from '../helpers/canvas';
 
-vi.mock('../../src/internal/sam/createCanvas');
+vi.mock('../../src/internal/createCanvas');
 
 const makeContext = (pixels: number[] = []) => {
     const imageData = { data: Uint8ClampedArray.from(pixels), width: 1, height: 1 } as ImageData;
@@ -202,79 +201,89 @@ describe('mask round trip', () => {
 });
 
 describe('applyDetectedMask', () => {
-    const makeDetected = (): DetectedObject => ({
-        id: 'sam-1',
-        score: 0.9,
-        bbox: { x: 0, y: 0, width: 2, height: 2 },
-        mask: new ImageData(2, 2),
-    });
-
     const setup = () => {
-        const scratchCtx = {
-            putImageData: vi.fn(),
+        const silhouetteCtx = {
             fillRect: vi.fn(),
+            putImageData: vi.fn(),
             fillStyle: '',
             globalCompositeOperation: 'source-over',
         };
-        const scratch = { getContext: vi.fn(() => scratchCtx) } as unknown as HTMLCanvasElement;
-        vi.mocked(createCanvas).mockReturnValue(scratch);
+        const silhouette = {
+            width: 2,
+            height: 2,
+            getContext: vi.fn(() => silhouetteCtx),
+        } as unknown as HTMLCanvasElement;
 
+        vi.mocked(createCanvas).mockClear();
         const { ctx } = makeContext();
-        return { ctx, scratch, scratchCtx };
+        return { ctx, silhouette, silhouetteCtx };
     };
 
     it('tints the silhouette with the live colour, discriminating on alpha', () => {
-        const { ctx, scratchCtx } = setup();
-        const detected = makeDetected();
+        const { ctx, silhouette, silhouetteCtx } = setup();
 
         // `source-in` has to be in force when the tint lands, not merely at some point.
         const opAtFill: string[] = [];
-        scratchCtx.fillRect.mockImplementation(() => opAtFill.push(scratchCtx.globalCompositeOperation));
+        silhouetteCtx.fillRect.mockImplementation(() => opAtFill.push(silhouetteCtx.globalCompositeOperation));
 
-        applyDetectedMask(ctx, { x: 8, y: 4 }, detected, '#ff0000');
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ff0000');
 
-        expect(scratchCtx.putImageData).toHaveBeenCalledWith(detected.mask, 0, 0);
-        expect(scratchCtx.fillStyle).toBe('#ff0000');
+        expect(silhouetteCtx.fillStyle).toBe('#ff0000');
+        expect(silhouetteCtx.fillRect).toHaveBeenCalledWith(0, 0, 2, 2);
         expect(opAtFill).toEqual(['source-in']);
     });
 
-    it('scales the silhouette to the editor canvas size', () => {
-        const { ctx, scratch } = setup();
-        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+    /**
+     * The surface arrives already rasterized. Copying its pixels onto a second canvas — which
+     * is what this did, by way of the detection's `ImageData` — was a full-frame round trip
+     * and an extra allocation per click, to rebuild something the pipeline had just produced.
+     */
+    it('tints in place rather than copying onto a scratch canvas', () => {
+        const { ctx, silhouette, silhouetteCtx } = setup();
 
-        expect(ctx.drawImage).toHaveBeenCalledWith(scratch, 0, 0, 8, 4);
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ff0000');
+
+        expect(createCanvas).not.toHaveBeenCalled();
+        expect(silhouetteCtx.putImageData).not.toHaveBeenCalled();
+    });
+
+    it('scales the silhouette to the editor canvas size', () => {
+        const { ctx, silhouette } = setup();
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ffffff');
+
+        expect(ctx.drawImage).toHaveBeenCalledWith(silhouette, 0, 0, 8, 4);
     });
 
     it('paints with source-over and restores the composite mode the caller had set', () => {
-        const { ctx } = setup();
+        const { ctx, silhouette } = setup();
         ctx.globalCompositeOperation = 'multiply';
 
         const opAtDraw: string[] = [];
         (ctx.drawImage as Mock).mockImplementation(() => opAtDraw.push(ctx.globalCompositeOperation));
 
-        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ffffff');
 
         expect(opAtDraw).toEqual(['source-over']);
         expect(ctx.globalCompositeOperation).toBe('multiply');
     });
 
     it('erases by subtracting the silhouette coverage', () => {
-        const { ctx } = setup();
+        const { ctx, silhouette } = setup();
 
         const opAtDraw: string[] = [];
         (ctx.drawImage as Mock).mockImplementation(() => opAtDraw.push(ctx.globalCompositeOperation));
 
-        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff', 'erase');
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ffffff', 'erase');
 
         expect(opAtDraw).toEqual(['destination-out']);
         expect(ctx.globalCompositeOperation).toBe('source-over');
     });
 
-    it('bails when the scratch canvas yields no context', () => {
+    it('bails when the silhouette yields no context', () => {
         const { ctx } = setup();
-        vi.mocked(createCanvas).mockReturnValue({ getContext: vi.fn(() => null) } as unknown as HTMLCanvasElement);
+        const silhouette = { width: 2, height: 2, getContext: vi.fn(() => null) } as unknown as HTMLCanvasElement;
 
-        applyDetectedMask(ctx, { x: 8, y: 4 }, makeDetected(), '#ffffff');
+        applyDetectedMask(ctx, { x: 8, y: 4 }, silhouette, '#ffffff');
         expect(ctx.drawImage).not.toHaveBeenCalled();
     });
 });

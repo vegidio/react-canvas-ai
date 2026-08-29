@@ -1,12 +1,11 @@
-import type { BoundingBox } from '../../hooks/useAutoSelect';
-import { createCanvas } from './createCanvas';
+import type { ScratchCanvas } from '../createCanvas';
+import type { BoundingBox } from '../detection';
+import { MASK_THRESHOLD } from '../../utils';
+import { createCanvas } from '../createCanvas';
 import { SAM_INPUT_SIZE } from './preprocess';
 
 /** Positive logits are the object; the model's own decision boundary, not a tunable. */
 const LOGIT_THRESHOLD = 0;
-
-/** Alpha at or above this counts as covered when scanning for the bounding box. */
-const BBOX_ALPHA_THRESHOLD = 128;
 
 /**
  * Thresholds low-res mask logits into an alpha-only `ImageData`. Pure so the thresholding is
@@ -24,6 +23,13 @@ export const logitsToAlpha = (logits: Float32Array, width: number, height: numbe
 
 /**
  * Scans an alpha silhouette for its bounding box. A zero-sized box means the mask is empty.
+ *
+ * Coverage is judged by {@link MASK_THRESHOLD}, the same half-coverage rule `toMask` exports
+ * by, so a detected object's box cannot disagree with the mask the editor writes out.
+ *
+ * Nested loops rather than one pass with `% width`: the row and column are already the loop
+ * counters, and the flat form ran an integer divide and modulo for every covered pixel of a
+ * full-resolution mask.
  */
 export const alphaBoundingBox = (mask: ImageData): BoundingBox => {
     const { data, width, height } = mask;
@@ -32,10 +38,11 @@ export const alphaBoundingBox = (mask: ImageData): BoundingBox => {
     let maxX = -1;
     let maxY = -1;
 
-    for (let i = 3, p = 0; i < data.length; i += 4, p += 1) {
-        if (data[i] >= BBOX_ALPHA_THRESHOLD) {
-            const x = p % width;
-            const y = (p / width) | 0;
+    for (let y = 0; y < height; y += 1) {
+        let alpha = y * width * 4 + 3;
+
+        for (let x = 0; x < width; x += 1, alpha += 4) {
+            if (data[alpha] < MASK_THRESHOLD) continue;
 
             if (x < minX) minX = x;
             if (y < minY) minY = y;
@@ -55,6 +62,12 @@ export const alphaBoundingBox = (mask: ImageData): BoundingBox => {
  * The low-res mask covers the *padded* frame, so only the top-left subregion corresponding to
  * the unpadded, resized image is sampled, then stretched to the target dimensions. Without
  * this, the padding on the right/bottom of non-square images leaks into the output.
+ *
+ * The surface the silhouette was rasterized on comes back alongside the pixels it was read
+ * from. `mask` is what consumers are handed and what the bounding box is measured on, but the
+ * editor composites from `silhouette`: it is the same image, already on a canvas, and putting
+ * `mask` back onto a second canvas to draw it was a full-frame copy in each direction for a
+ * picture the pipeline had in the right form all along.
  */
 export const logitsToMask = (
     logits: Float32Array,
@@ -62,7 +75,7 @@ export const logitsToMask = (
     resizedSize: readonly [number, number],
     targetWidth: number,
     targetHeight: number,
-): { mask: ImageData; bbox: BoundingBox } => {
+): { mask: ImageData; bbox: BoundingBox; silhouette: ScratchCanvas } => {
     const [logitsH, logitsW] = logitsShape;
     const [resizedW, resizedH] = resizedSize;
 
@@ -85,7 +98,7 @@ export const logitsToMask = (
     targetCtx.drawImage(logitCanvas as CanvasImageSource, 0, 0, srcW, srcH, 0, 0, targetWidth, targetHeight);
 
     const mask = targetCtx.getImageData(0, 0, targetWidth, targetHeight);
-    return { mask, bbox: alphaBoundingBox(mask) };
+    return { mask, bbox: alphaBoundingBox(mask), silhouette: targetCanvas };
 };
 
 /** Picks the mask index with the highest IoU score. */

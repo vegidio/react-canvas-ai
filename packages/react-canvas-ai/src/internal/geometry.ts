@@ -71,3 +71,12 @@ export const clampPan = (x: number, y: number, contentSize: Point, constrain: bo
         y: Math.max(Math.min(y, maxPanY), -maxPanY),
     };
 };
+
+/**
+ * Clamps a point to the last addressable pixel of a surface. The zoom/pan inversion can land a
+ * hair outside the canvas at the edges, and consumers downstream index pixels with the result.
+ */
+export const clampToSize = (point: Point, size: Point): Point => ({
+    x: Math.min(Math.max(point.x, 0), Math.max(size.x - 1, 0)),
+    y: Math.min(Math.max(point.y, 0), Math.max(size.y - 1, 0)),
+});

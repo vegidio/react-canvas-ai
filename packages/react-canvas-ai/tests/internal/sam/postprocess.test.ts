@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { createCanvas } from '../../../src/internal/sam/createCanvas';
+import { createCanvas } from '../../../src/internal/createCanvas';
 import { alphaBoundingBox, logitsToAlpha, logitsToMask, pickBestMask } from '../../../src/internal/sam/postprocess';
 
-vi.mock('../../../src/internal/sam/createCanvas');
+vi.mock('../../../src/internal/createCanvas');
 
 const makeAlphaImage = (width: number, height: number, alphaAt: Array<[number, number, number?]>): ImageData => {
     const image = new ImageData(width, height);
@@ -57,6 +57,7 @@ describe('logitsToMask', () => {
         getImageData: vi.fn(),
     };
     let logitCanvas: HTMLCanvasElement;
+    let targetCanvas: HTMLCanvasElement;
 
     beforeEach(() => {
         logitCtx.putImageData.mockReset();
@@ -64,7 +65,7 @@ describe('logitsToMask', () => {
         targetCtx.getImageData.mockReset().mockReturnValue(makeAlphaImage(8, 4, [[2, 1]]));
 
         logitCanvas = { getContext: vi.fn(() => logitCtx) } as unknown as HTMLCanvasElement;
-        const targetCanvas = { getContext: vi.fn(() => targetCtx) } as unknown as HTMLCanvasElement;
+        targetCanvas = { getContext: vi.fn(() => targetCtx) } as unknown as HTMLCanvasElement;
         vi.mocked(createCanvas).mockReset().mockReturnValueOnce(logitCanvas).mockReturnValueOnce(targetCanvas);
     });
 
@@ -95,6 +96,17 @@ describe('logitsToMask', () => {
 
         expect(mask.width).toBe(8);
         expect(bbox).toEqual({ x: 2, y: 1, width: 1, height: 1 });
+    });
+
+    /**
+     * The pixels and the surface they were read off are the same picture. Handing both back
+     * lets the editor composite from the canvas while consumers still get the `ImageData`,
+     * instead of putting those pixels onto a second canvas to draw them.
+     */
+    it('hands back the surface the silhouette was rasterized on', () => {
+        const { silhouette } = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
+
+        expect(silhouette).toBe(targetCanvas);
     });
 
     it('throws when a 2D context is unavailable', () => {

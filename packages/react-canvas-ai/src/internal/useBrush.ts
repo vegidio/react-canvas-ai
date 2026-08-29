@@ -1,6 +1,5 @@
 import type { RefObject } from 'react';
 import { useCallback, useEffect } from 'react';
-import type { MaskEditorMode } from '../hooks/useMaskEditor';
 import type { Point } from './geometry';
 import { drawCursorCircle } from './canvas';
 import { useLatest } from './useLatest';
@@ -15,23 +14,39 @@ export type CursorPainterOptions = {
     size: Point;
     maskColor: string;
     maskOpacity: number;
+    /** Whether the current mode uses the brush. An inactive brush paints nothing. */
+    active: boolean;
 };
 
 /**
- * Builds the brush-outline painter. Stable across renders — the appearance inputs are read
- * through refs so the pointer listeners below never need re-attaching when a colour changes.
+ * Builds the brush-outline painter, and owns the outline's whole lifetime: it paints while the
+ * brush is active and clears the layer when it stops being active. Keeping the clear here
+ * rather than in the editor is what lets a mode without a brush be declared rather than
+ * special-cased — otherwise the circle painted before the switch sits on the layer until the
+ * next paint-mode move.
+ *
+ * The painter itself is stable across renders — the appearance inputs are read through refs so
+ * the pointer listeners below never need re-attaching when a colour changes.
  */
 export const useCursorPainter = (
     cursorContext: CanvasRenderingContext2D | undefined,
     options: CursorPainterOptions,
 ): PaintCursor => {
     const optionsRef = useLatest(options);
+    const { active } = options;
+
+    useEffect(() => {
+        if (active || !cursorContext) return;
+        cursorContext.clearRect(0, 0, cursorContext.canvas.width, cursorContext.canvas.height);
+    }, [active, cursorContext]);
 
     return useCallback(
         (x, y, radius) => {
             if (!cursorContext) return;
 
-            const { size, maskColor, maskOpacity } = optionsRef.current;
+            const { size, maskColor, maskOpacity, active: isActive } = optionsRef.current;
+            if (!isActive) return;
+
             drawCursorCircle(cursorContext, {
                 size,
                 x,
@@ -52,8 +67,12 @@ export type BrushCursorOptions = {
     cursorSizeRef: RefObject<number>;
     isPanning: boolean;
     isSpaceKeyDown: boolean;
-    /** A ref rather than the value, so mode flips never re-attach the native listener. */
-    modeRef: RefObject<MaskEditorMode>;
+    /**
+     * Whether the active mode uses the brush. A capability rather than the mode itself, so a
+     * new mode declares what it does instead of being enumerated here; a ref rather than the
+     * value, so mode flips never re-attach the native listener.
+     */
+    isBrushActiveRef: RefObject<boolean>;
     paintDab: (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
 };
 
@@ -70,13 +89,19 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
         if (!cursorCanvas) return;
 
         const handleMouseMove = (evt: MouseEvent) => {
-            const { paintCursor, getImageCoordinates, cursorSizeRef, isPanning, isSpaceKeyDown, modeRef, paintDab } =
-                optionsRef.current;
+            const {
+                paintCursor,
+                getImageCoordinates,
+                cursorSizeRef,
+                isPanning,
+                isSpaceKeyDown,
+                isBrushActiveRef,
+                paintDab,
+            } = optionsRef.current;
             if (isPanning) return;
 
-            // In auto mode the pointer is a crosshair, not a brush: no outline, no dabs. The
-            // editor clears the cursor layer on the mode flip, so nothing stale lingers here.
-            if (modeRef.current === 'auto') return;
+            // A mode without a brush leaves the pointer alone entirely: no outline, no dabs.
+            if (!isBrushActiveRef.current) return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
             paintCursor(x, y, cursorSizeRef.current);
@@ -95,8 +120,8 @@ export type BrushSizeWheelOptions = {
     paintCursor: PaintCursor;
     getImageCoordinates: (clientX: number, clientY: number) => Point;
     cursorSizeRef: RefObject<number>;
-    /** See {@link BrushCursorOptions.modeRef}. */
-    modeRef: RefObject<MaskEditorMode>;
+    /** See {@link BrushCursorOptions.isBrushActiveRef}. */
+    isBrushActiveRef: RefObject<boolean>;
     setCursorSize: (size: number) => void;
     onCursorSizeChange: (size: number) => void;
 };
@@ -117,7 +142,7 @@ export const useBrushSizeWheel = (
                 paintCursor,
                 getImageCoordinates,
                 cursorSizeRef,
-                modeRef,
+                isBrushActiveRef,
                 setCursorSize,
                 onCursorSizeChange,
             } = optionsRef.current;
@@ -128,9 +153,9 @@ export const useBrushSizeWheel = (
             if (!enabled) return;
             if (evt.ctrlKey || evt.metaKey) return;
 
-            // No brush in auto mode: resizing it would be an invisible state mutation the
-            // user only discovers back in paint mode.
-            if (modeRef.current === 'auto') return;
+            // No brush in this mode: resizing it would be an invisible state mutation the
+            // user only discovers back in a mode that paints.
+            if (!isBrushActiveRef.current) return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
             const newSize = Math.max(1, cursorSizeRef.current + (evt.deltaY > 0 ? -1 : 1));

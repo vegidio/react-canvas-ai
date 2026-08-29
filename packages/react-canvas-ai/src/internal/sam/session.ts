@@ -3,10 +3,15 @@ import type { SamConfig } from '../../hooks/useAutoSelect';
 import { fetchOnnx } from './cache';
 
 export type SamSessions = {
+    /**
+     * The loaded runtime. Handed back rather than re-imported at each use site: this is the
+     * one place that rewrites the "module not found" failure into an actionable message, and
+     * a second `await import()` in the detect path is an extra await for a module the caller
+     * already holds.
+     */
+    ort: typeof import('onnxruntime-web');
     encoder: InferenceSession;
     decoder: InferenceSession;
-    encoderInputNames: readonly string[];
-    decoderInputNames: readonly string[];
 };
 
 /**
@@ -60,10 +65,5 @@ export const loadSessions = async (config: SamConfig, signal?: AbortSignal): Pro
         );
     }
 
-    return {
-        encoder,
-        decoder,
-        encoderInputNames: encoder.inputNames,
-        decoderInputNames: decoder.inputNames,
-    };
+    return { ort, encoder, decoder };
 };

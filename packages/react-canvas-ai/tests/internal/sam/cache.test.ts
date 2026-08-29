@@ -55,9 +55,10 @@ describe('fetchOnnx', () => {
 
         await expect(fetchOnnx(URL)).resolves.toBe(buffer);
         expect(fetchMock).toHaveBeenCalledTimes(1);
-        expect(cache.put).toHaveBeenCalledWith(URL, expect.anything());
-        // The clone is what gets persisted, so consuming the body afterwards still works.
+        // The clone is taken synchronously — the body is consumed right after — but the write
+        // itself is fired and not awaited, so the buffer comes back before the put lands.
         expect(response.clone).toHaveBeenCalled();
+        await vi.waitFor(() => expect(cache.put).toHaveBeenCalledWith(URL, expect.anything()));
     });
 
     it('falls through to the network when Cache Storage is unavailable', async () => {
@@ -98,6 +99,19 @@ describe('fetchOnnx', () => {
 
         await expect(fetchOnnx(URL)).rejects.toThrow(/404/);
         expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not wait for the write before handing the buffer back', async () => {
+        const buffer = new ArrayBuffer(4);
+        const { cache, storage } = makeCacheStorage(undefined);
+        // A write that never settles: a ~14 MB put is not something session creation should
+        // block on, and this used to be awaited.
+        cache.put.mockReturnValue(new Promise(() => {}));
+        const fetchMock = vi.fn(async () => makeResponse(true, buffer));
+        vi.stubGlobal('caches', storage);
+        vi.stubGlobal('fetch', fetchMock);
+
+        await expect(fetchOnnx(URL)).resolves.toBe(buffer);
     });
 
     it('still returns the buffer when persisting it fails', async () => {

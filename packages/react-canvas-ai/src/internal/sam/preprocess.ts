@@ -1,5 +1,5 @@
 import type { Point } from '../geometry';
-import { createCanvas } from './createCanvas';
+import { createCanvas } from '../createCanvas';
 
 /** The square input frame SAM's vision encoder expects. */
 export const SAM_INPUT_SIZE = 1024;
@@ -18,48 +18,43 @@ export type PreprocessedImage = {
 };
 
 /**
- * Normalizes RGBA pixels of the padded 1024×1024 frame into a CHW float tensor. Pure so the
- * per-channel arithmetic is testable without a canvas.
+ * Normalizes the `width` × `height` RGBA pixels of the resized image into the encoder's CHW
+ * float tensor, scattered into the top-left of the 1024×1024 frame with a `SAM_INPUT_SIZE`
+ * row stride. Pure so the per-channel arithmetic is testable without a canvas.
+ *
+ * The letterbox padding is left at the `Float32Array`'s own zero fill, which is what the
+ * reference SAM pipeline produces: it pads with the pixel mean *before* normalization, and
+ * that is zero after it. Normalizing the padding like image content and zeroing it in a
+ * second pass — which is what this used to do — walked the padding region twice, and
+ * normalizing it like image content without that second pass shifts it to ≈ −2.1 per
+ * channel, feeding the encoder a dark band it treats as part of the scene.
  */
-export const normalizeToTensor = (pixels: Uint8ClampedArray): Float32Array => {
+export const normalizeToTensor = (pixels: Uint8ClampedArray, width: number, height: number): Float32Array => {
     const plane = SAM_INPUT_SIZE * SAM_INPUT_SIZE;
     const data = new Float32Array(3 * plane);
 
-    for (let i = 0, offset = 0; i < plane; i += 1, offset += 4) {
-        data[i] = (pixels[offset] - MEAN[0]) / STD[0];
-        data[plane + i] = (pixels[offset + 1] - MEAN[1]) / STD[1];
-        data[2 * plane + i] = (pixels[offset + 2] - MEAN[2]) / STD[2];
+    for (let y = 0; y < height; y += 1) {
+        const rowStart = y * SAM_INPUT_SIZE;
+        let offset = y * width * 4;
+
+        for (let x = 0; x < width; x += 1, offset += 4) {
+            const i = rowStart + x;
+            data[i] = (pixels[offset] - MEAN[0]) / STD[0];
+            data[plane + i] = (pixels[offset + 1] - MEAN[1]) / STD[1];
+            data[2 * plane + i] = (pixels[offset + 2] - MEAN[2]) / STD[2];
+        }
     }
 
     return data;
 };
 
 /**
- * Zeroes the letterbox padding in a CHW tensor, in place.
- *
- * The reference SAM pipeline pads with the pixel mean *before* normalization, which is zero
- * after it. Normalizing the transparent padding like image content instead — which is what the
- * plugin this was ported from did — shifted it to ≈ −2.1 per channel, feeding the encoder a
- * dark band it treated as part of the scene.
- */
-export const zeroPadding = (data: Float32Array, resizedW: number, resizedH: number): void => {
-    const plane = SAM_INPUT_SIZE * SAM_INPUT_SIZE;
-
-    for (let channel = 0; channel < 3; channel += 1) {
-        const base = channel * plane;
-
-        for (let y = 0; y < SAM_INPUT_SIZE; y += 1) {
-            const row = base + y * SAM_INPUT_SIZE;
-            // Rows below the resized image are all padding; rows inside it pad from the right edge.
-            const startX = y < resizedH ? resizedW : 0;
-            if (startX < SAM_INPUT_SIZE) data.fill(0, row + startX, row + SAM_INPUT_SIZE);
-        }
-    }
-};
-
-/**
  * Letterboxes the decoded image into the 1024×1024 input frame and normalizes it into the
  * encoder's tensor layout.
+ *
+ * The scratch canvas is the size of the *resized* image, not the padded frame: the padding
+ * carries no information, so drawing, reading back and normalizing it was work whose only
+ * result was overwritten with zeroes.
  *
  * Takes the editor's already-decoded element directly: the plugin this was ported from accepted
  * a URL and re-fetched and re-decoded the image with a hard-coded `crossOrigin='anonymous'` —
@@ -74,15 +69,14 @@ export const imageToEncoderInput = (image: HTMLImageElement): PreprocessedImage 
     const resizedW = Math.max(1, Math.round(origW * scale));
     const resizedH = Math.max(1, Math.round(origH * scale));
 
-    const canvas = createCanvas(SAM_INPUT_SIZE, SAM_INPUT_SIZE);
+    const canvas = createCanvas(resizedW, resizedH);
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Failed to acquire a 2D context for SAM preprocessing.');
 
     ctx.drawImage(image, 0, 0, resizedW, resizedH);
-    const pixels = ctx.getImageData(0, 0, SAM_INPUT_SIZE, SAM_INPUT_SIZE).data;
+    const pixels = ctx.getImageData(0, 0, resizedW, resizedH).data;
 
-    const data = normalizeToTensor(pixels);
-    zeroPadding(data, resizedW, resizedH);
+    const data = normalizeToTensor(pixels, resizedW, resizedH);
 
     return { data, dims: [1, 3, SAM_INPUT_SIZE, SAM_INPUT_SIZE], resizedSize: [resizedW, resizedH] };
 };

@@ -39,6 +39,10 @@
                             {
                                 "name": "useElementRef",
                                 "stableResult": [0]
+                            },
+                            {
+                                "name": "usePropOverride",
+                                "stableResult": [1]
                             }
                         ]
                     }

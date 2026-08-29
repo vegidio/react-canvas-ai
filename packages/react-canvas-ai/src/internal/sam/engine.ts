@@ -1,5 +1,7 @@
 import type { Tensor } from 'onnxruntime-web';
-import type { DetectedObject, SamConfig } from '../../hooks/useAutoSelect';
+import type { SamConfig } from '../../hooks/useAutoSelect';
+import type { ScratchCanvas } from '../createCanvas';
+import type { DetectedObject } from '../detection';
 import type { Point } from '../geometry';
 import { logitsToMask, pickBestMask } from './postprocess';
 import { imagePointToInputSpace, imageToEncoderInput } from './preprocess';
@@ -8,7 +10,20 @@ import { loadSessions, type SamSessions } from './session';
 export type DetectOptions = {
     /** Detections scoring below this are rejected and `detect` resolves `undefined`. */
     minScore?: number;
-    signal?: AbortSignal;
+};
+
+/**
+ * One detection: the shape handed to consumers, plus the surface it was rasterized on.
+ *
+ * They travel together because they are the same picture in two forms. `object.mask` is the
+ * documented output and what `bbox` was measured on; `silhouette` is what the editor draws,
+ * saving a full-frame copy in each direction over putting those pixels back onto a canvas.
+ * Single-use: the editor tints it in place, which cannot disturb `object.mask` because that
+ * snapshot was taken before any tint.
+ */
+export type Detection = {
+    object: DetectedObject;
+    silhouette: ScratchCanvas;
 };
 
 /**
@@ -28,7 +43,7 @@ export type SamEngine = {
         point: Point,
         target: Point,
         options?: DetectOptions,
-    ) => Promise<DetectedObject | undefined>;
+    ) => Promise<Detection | undefined>;
     dispose: () => void;
 };
 
@@ -47,11 +62,19 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
     // `invalidateEmbedding()` for the cases where the identity lied.
     let embeddingKey: HTMLImageElement | undefined;
 
-    const getSessions = (signal?: AbortSignal): Promise<SamSessions> => {
+    // The download's own lifetime, which is the load's — not the image's. Threading a caller's
+    // per-image signal down to `fetch` instead aborted a 14 MB download every time `src`
+    // changed, before Cache Storage had been written, so the next warm-up started from zero.
+    // Recreated per load, so `dispose` cancelling one does not poison the next.
+    let loadAbort: AbortController | undefined;
+
+    const getSessions = (): Promise<SamSessions> => {
         // A failed load is not cached: the next call retries rather than replaying the error
         // forever (a transient network failure would otherwise brick the engine).
         if (!sessionsPromise) {
-            sessionsPromise = loadSessions(config, signal).catch((error: unknown) => {
+            const controller = new AbortController();
+            loadAbort = controller;
+            sessionsPromise = loadSessions(config, controller.signal).catch((error: unknown) => {
                 sessionsPromise = undefined;
                 throw error;
             });
@@ -62,11 +85,19 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
     const ensureEmbedding = async (image: HTMLImageElement, signal?: AbortSignal): Promise<Embedding> => {
         if (embedding && embeddingKey === image) return embedding;
 
-        const sessions = await getSessions(signal);
-        const ort = await import('onnxruntime-web');
+        // Started, not awaited: the download is network-bound and the preprocessing is a
+        // straight CPU pass over the pixels, so the first warm-up pays their max rather than
+        // their sum. The no-op catch keeps a throw from `imageToEncoderInput` — which would
+        // leave the promise unawaited — from surfacing as an unhandled rejection.
+        const pending = getSessions();
+        pending.catch(() => {});
+
         const pre = imageToEncoderInput(image);
-        const pixelValues = new ort.Tensor('float32', pre.data, [...pre.dims]);
-        const inputName = sessions.encoderInputNames[0] ?? 'pixel_values';
+        const sessions = await pending;
+        if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
+
+        const pixelValues = new sessions.ort.Tensor('float32', pre.data, [...pre.dims]);
+        const inputName = sessions.encoder.inputNames[0] ?? 'pixel_values';
         const encoderOutput = await sessions.encoder.run({ [inputName]: pixelValues });
 
         const image_embeddings = findTensor(encoderOutput, ['image_embeddings', 'last_hidden_state', 'image_features']);
@@ -91,9 +122,9 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
             await ensureEmbedding(image, signal);
         },
         detect: async (image, point, target, options) => {
-            const sessions = await getSessions(options?.signal);
-            const emb = await ensureEmbedding(image, options?.signal);
-            const ort = await import('onnxruntime-web');
+            const emb = await ensureEmbedding(image);
+            const sessions = await getSessions();
+            const { ort } = sessions;
 
             const [inputX, inputY] = imagePointToInputSpace(point, target, emb.resizedSize);
             const input_points = new ort.Tensor('float32', Float32Array.from([inputX, inputY]), [1, 1, 1, 2]);
@@ -111,7 +142,7 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
             // Different SAM exports want different input sets; feeding one an extra tensor is an
             // error, so only the names the session declares are passed.
             const filtered: Record<string, Tensor> = {};
-            for (const name of sessions.decoderInputNames) {
+            for (const name of sessions.decoder.inputNames) {
                 const match = decoderInputs[name];
                 if (match) filtered[name] = match;
             }
@@ -139,15 +170,35 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
             const maskStart = bestIdx * maskH * maskW;
             const bestLogits = masksData.subarray(maskStart, maskStart + maskH * maskW);
 
-            const { mask, bbox } = logitsToMask(bestLogits, [maskH, maskW], emb.resizedSize, target.x, target.y);
+            const { mask, bbox, silhouette } = logitsToMask(
+                bestLogits,
+                [maskH, maskW],
+                emb.resizedSize,
+                target.x,
+                target.y,
+            );
             if (bbox.width === 0 || bbox.height === 0) return undefined;
 
-            return { id: `sam-${Date.now()}`, score: bestScore, bbox, mask };
+            return { object: { id: `sam-${Date.now()}`, score: bestScore, bbox, mask }, silhouette };
         },
         dispose: () => {
             embedding = undefined;
             embeddingKey = undefined;
+
+            // Dropping the reference is not enough: an `InferenceSession` owns WASM-heap
+            // allocations — the deserialized graph and the runtime's arena — that JS garbage
+            // collection cannot reclaim. Only `release()` frees them, so without this every
+            // config change and every unmount leaked two models' worth of memory.
+            const pending = sessionsPromise;
             sessionsPromise = undefined;
+            loadAbort?.abort();
+            loadAbort = undefined;
+
+            void pending
+                ?.then((s) => Promise.all([s.encoder.release(), s.decoder.release()]))
+                .catch(() => {
+                    // A load that never finished has nothing to release.
+                });
         },
     };
 };

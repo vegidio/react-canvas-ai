@@ -3,7 +3,7 @@ import { act, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutoSelectOptions, DetectedObject } from '../src/hooks/useAutoSelect';
 import type { MaskEditorMode, UseMaskEditorProps } from '../src/hooks/useMaskEditor';
-import type { SamEngine } from '../src/internal/sam/engine';
+import type { Detection, SamEngine } from '../src/internal/sam/engine';
 import { useMaskEditor } from '../src/hooks/useMaskEditor';
 import { applyDetectedMask } from '../src/internal/canvas';
 import { createSamEngine } from '../src/internal/sam/engine';
@@ -668,12 +668,17 @@ describe('auto-selection', () => {
         mask: new ImageData(2, 2),
     };
 
+    // The editor composites from the surface the detection was rasterized on, and hands
+    // `DETECTED` itself to consumers — the assertions below pin both halves.
+    const SILHOUETTE = document.createElement('canvas');
+    const DETECTION: Detection = { object: DETECTED, silhouette: SILHOUETTE };
+
     let engine: SamEngine;
 
     beforeEach(() => {
         engine = {
             prepare: vi.fn(async () => {}),
-            detect: vi.fn(async () => DETECTED),
+            detect: vi.fn(async () => DETECTION),
             dispose: vi.fn(),
         };
         // `restoreAllMocks` in the shared teardown only touches spies, so the module
@@ -807,7 +812,7 @@ describe('auto-selection', () => {
         expect(applyDetectedMask).toHaveBeenCalledWith(
             expect.anything(),
             expect.anything(),
-            DETECTED,
+            SILHOUETTE,
             '#ffffff',
             'paint',
         );
@@ -828,7 +833,7 @@ describe('auto-selection', () => {
         expect(applyDetectedMask).toHaveBeenCalledWith(
             expect.anything(),
             expect.anything(),
-            DETECTED,
+            SILHOUETTE,
             '#ffffff',
             'erase',
         );
@@ -845,7 +850,7 @@ describe('auto-selection', () => {
         expect(applyDetectedMask).toHaveBeenCalledWith(
             expect.anything(),
             expect.anything(),
-            DETECTED,
+            SILHOUETTE,
             '#ffffff',
             'erase',
         );
@@ -865,7 +870,7 @@ describe('auto-selection', () => {
     });
 
     it('ignores clicks while a detection is in flight', async () => {
-        let release: (value: DetectedObject) => void = () => {};
+        let release: (value: Detection) => void = () => {};
         vi.mocked(engine.detect).mockImplementation(() => new Promise((resolve) => (release = resolve)));
 
         const { state, cursorCanvas } = setup({ autoSelect: AUTO });
@@ -877,7 +882,7 @@ describe('auto-selection', () => {
         await click(cursorCanvas(), { clientX: 6, clientY: 6 });
         expect(engine.detect).toHaveBeenCalledTimes(1);
 
-        await act(async () => release(DETECTED));
+        await act(async () => release(DETECTION));
     });
 
     it('routes a failed click detection to onError', async () => {

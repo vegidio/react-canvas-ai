@@ -1,32 +1,31 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefCallback, RefObject } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { DetectedObject } from '../internal/detection';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
+import type { MaskEditorMode } from '../internal/modes';
 import type { ElementHandle } from '../internal/useElementRef';
-import type { AutoSelectOptions, AutoSelectStatus, DetectedObject } from './useAutoSelect';
+import type { AutoSelectOptions, AutoSelectStatus } from './useAutoSelect';
 import { applyDetectedMask, applyMaskImage, paintMaskDot, recolorMask } from '../internal/canvas';
 import { MaskEditorDefaults } from '../internal/defaults';
+import { clampToSize } from '../internal/geometry';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
+import { MODE_TOOLS } from '../internal/modes';
+import { toError } from '../internal/toError';
 import { useBrushCursor, useBrushSizeWheel, useCursorPainter } from '../internal/useBrush';
 import { useCanvas2dContext } from '../internal/useCanvas2dContext';
 import { useElementRef } from '../internal/useElementRef';
 import { useEventCallback, useLatest } from '../internal/useLatest';
+import { usePropOverride } from '../internal/usePropOverride';
 import { hexToRgb, toMask } from '../utils';
 import { useAutoSelect } from './useAutoSelect';
 import { useHistory } from './useHistory';
 import { useImageLoader } from './useImageLoader';
 import { useZoomPan } from './useZoomPan';
 
+export type { MaskEditorMode } from '../internal/modes';
 export { MaskEditorDefaults } from '../internal/defaults';
-
-/**
- * The editor's interaction mode. `'paint'` is the freehand brush; `'auto'` turns clicks into
- * SAM segmentations — click to add the object under the cursor to the mask, shift-click or
- * right-click to subtract it. Meaningless without `autoSelect` configured: the editor forces
- * `'paint'` then.
- */
-export type MaskEditorMode = 'paint' | 'auto';
 
 /** The CSS `mix-blend-mode` values the mask layer supports. */
 export type MaskBlendMode =
@@ -258,13 +257,28 @@ const MASK_DEBOUNCE_MS = 300;
  */
 const AUTO_CLICK_SLOP_PX = 4;
 
+/**
+ * The gesture that takes coverage away rather than adding it: the secondary button, or shift.
+ * One definition, because the brush reads it off a live `buttons` bitmask and auto-selection
+ * off the `button` recorded at mousedown, and the two silently drifting would mean shift-click
+ * erasing in one mode and painting in the other.
+ */
+const isEraseGesture = (evt: { buttons?: number; button?: number; shiftKey: boolean }): boolean =>
+    evt.shiftKey || (evt.buttons !== undefined ? evt.buttons > 1 : evt.button === 2);
+
+/** What a mode does with a press and a release on the canvas. */
+type ModeHandlers = {
+    onDown: (e: ReactMouseEvent<HTMLCanvasElement>) => void;
+    onUp: (e: ReactMouseEvent<HTMLCanvasElement>) => void;
+};
+
 export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn => {
     const {
         src,
         crossOrigin,
         maxWidth = MaskEditorDefaults.maxWidth,
         maxHeight = MaskEditorDefaults.maxHeight,
-        cursorSize: initialCursorSize = MaskEditorDefaults.cursorSize,
+        cursorSize: cursorSizeProp = MaskEditorDefaults.cursorSize,
         maskColor = MaskEditorDefaults.maskColor,
         maskBlendMode = MaskEditorDefaults.maskBlendMode,
         maskOpacity = MaskEditorDefaults.maskOpacity,
@@ -303,40 +317,38 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     const cursorContext = useCanvas2dContext(cursorCanvas);
 
     const [isDrawing, setIsDrawing] = useState(false);
-    const [currentCursorSize, setCursorSize] = useState(initialCursorSize);
 
-    // Adjusting during render rather than in an effect: as an effect, every `cursorSize` prop
-    // change first committed the stale size and only then re-rendered with the new one.
-    const [appliedCursorSizeProp, setAppliedCursorSizeProp] = useState(initialCursorSize);
-    if (appliedCursorSizeProp !== initialCursorSize) {
-        setAppliedCursorSizeProp(initialCursorSize);
-        setCursorSize(initialCursorSize);
-    }
+    // `cursorSize` and `mode` are both quasi-controlled — the prop wins when it changes, the
+    // setter wins in between — so they share one hook rather than one copy of the dance each.
+    const [currentCursorSize, setCursorSize] = usePropOverride(cursorSizeProp, MaskEditorDefaults.cursorSize);
+    const [modeState, setModeState] = usePropOverride<MaskEditorMode>(modeProp, 'paint');
 
-    // Same quasi-controlled shape as `cursorSize`: the prop wins when it changes, `setMode`
-    // wins in between.
-    const [modeState, setModeState] = useState<MaskEditorMode>(modeProp ?? 'paint');
-    const [appliedModeProp, setAppliedModeProp] = useState(modeProp);
-    if (appliedModeProp !== modeProp) {
-        setAppliedModeProp(modeProp);
-        if (modeProp) setModeState(modeProp);
-    }
+    // The boolean, not the object: `autoSelect` is typically an inline literal whose identity
+    // changes every render, which would defeat the return memo below (and with it every
+    // context consumer's render bail-out).
+    const hasAutoSelect = Boolean(autoSelect);
 
     // Derived, not clamped in state: dropping `autoSelect` snaps the editor back to painting,
     // and configuring it later resumes whatever mode was last requested.
-    const mode: MaskEditorMode = autoSelect ? modeState : 'paint';
+    const mode: MaskEditorMode = hasAutoSelect ? modeState : 'paint';
+
+    // What the active mode does to the pointer, as data. Every site that used to ask
+    // `mode === 'auto'` asks the descriptor instead, so a third mode is one table entry.
+    const tool = MODE_TOOLS[mode];
 
     // Latched rather than derived from `mode`: leaving auto mode must not tear the warm model
     // down, or every toggle back would re-download and re-encode.
     const [hasEnteredAuto, setHasEnteredAuto] = useState(false);
-    if (mode === 'auto' && !hasEnteredAuto) setHasEnteredAuto(true);
+    if (tool.usesAutoSelect && !hasEnteredAuto) setHasEnteredAuto(true);
 
     const { image, size, key } = useImageLoader(src, maxWidth, maxHeight, crossOrigin);
 
     const autoSelection = useAutoSelect({
         config: autoSelect,
         image,
-        shouldWarm: Boolean(autoSelect && (autoSelect.preload || hasEnteredAuto)),
+        // `useAutoSelect` is already inert without a config, and `hasEnteredAuto` can only
+        // latch while `autoSelect` is configured, so re-checking it here would be a third guard.
+        shouldWarm: Boolean(autoSelect?.preload || hasEnteredAuto),
     });
 
     const [zoomPanState, zoomPanActions, attachZoomPan] = useZoomPan(size, {
@@ -364,8 +376,9 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     const onMaskChangeRef = useLatest(onMaskChange);
     const keyboardScopeRef = useLatest(keyboardScope);
     const modeRef = useLatest(mode);
+    const isBrushActiveRef = useLatest(tool.usesBrush);
     const sizeRef = useLatest(size);
-    const hasAutoSelectRef = useLatest(Boolean(autoSelect));
+    const hasAutoSelectRef = useLatest(hasAutoSelect);
     const isDetectingRef = useLatest(autoSelection.isDetecting);
     const detectRef = useLatest(autoSelection.detect);
 
@@ -479,29 +492,28 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
 
     /**
      * Stamps one brush dab for a pointer event. Both the freehand move handler and mousedown
-     * paint identically — the secondary button or shift erases, taking coverage away rather than
-     * painting a background colour over it — so the decision lives here rather than being
-     * repeated at each call site.
+     * paint identically, so the decision lives here rather than being repeated at each call
+     * site. Whether the brush runs at all is the mode descriptor's business, checked once by
+     * each of the two entry points rather than a third time here.
      */
     const paintDab = useCallback(
         (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
             if (!maskContext) return;
-            // The single choke point for both the mousedown stamp and the freehand move path:
-            // in auto mode clicks segment, they never dab.
-            if (modeRef.current === 'auto') return;
-            const mode = evt.buttons > 1 || evt.shiftKey ? 'erase' : 'paint';
-            paintMaskDot(maskContext, x, y, cursorSizeRef.current, maskColorRef.current, mode);
+            const dabMode = isEraseGesture(evt) ? 'erase' : 'paint';
+            paintMaskDot(maskContext, x, y, cursorSizeRef.current, maskColorRef.current, dabMode);
         },
         [maskContext],
     );
-    const paintCursor = useCursorPainter(cursorContext, { size, maskColor, maskOpacity });
 
-    // The brush hooks skip painting the outline in auto mode, but the circle painted before
-    // the switch would otherwise sit on the layer until the next paint-mode move.
-    useEffect(() => {
-        if (mode !== 'auto' || !cursorContext) return;
-        cursorContext.clearRect(0, 0, cursorContext.canvas.width, cursorContext.canvas.height);
-    }, [mode, cursorContext]);
+    // `active` rather than an effect out here: the painter owns clearing the outline when the
+    // brush goes away, so the mode that has no brush declares that once instead of the editor
+    // remembering to tidy up after it.
+    const paintCursor = useCursorPainter(cursorContext, {
+        size,
+        maskColor,
+        maskOpacity,
+        active: tool.usesBrush,
+    });
 
     useBrushCursor(cursorCanvas, {
         paintCursor,
@@ -509,7 +521,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         cursorSizeRef,
         isPanning: zoomPanState.isPanning,
         isSpaceKeyDown: zoomPanState.isSpaceKeyDown,
-        modeRef,
+        isBrushActiveRef,
         paintDab,
     });
 
@@ -518,7 +530,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         paintCursor,
         getImageCoordinates: zoomPanActions.getImageCoordinates,
         cursorSizeRef,
-        modeRef,
+        isBrushActiveRef,
         setCursorSize,
         onCursorSizeChange: notifyCursorSizeChange,
     });
@@ -535,23 +547,17 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     const runAutoSelect = useCallback(
         async (point: Point, dabMode: 'paint' | 'erase'): Promise<DetectedObject | undefined> => {
             const target = sizeRef.current;
-            // The zoom/pan inversion can land a hair outside the surface at the edges.
-            const clamped: Point = {
-                x: Math.min(Math.max(point.x, 0), Math.max(target.x - 1, 0)),
-                y: Math.min(Math.max(point.y, 0), Math.max(target.y - 1, 0)),
-            };
-
-            const detected = await detectRef.current(clamped, target);
-            if (!detected) return undefined;
+            const detection = await detectRef.current(clampToSize(point, target), target);
+            if (!detection) return undefined;
 
             if (!maskContext) throw new Error('[MaskEditor] The mask canvas is not ready.');
-            applyDetectedMask(maskContext, sizeRef.current, detected, maskColorRef.current, dabMode);
+            applyDetectedMask(maskContext, sizeRef.current, detection.silhouette, maskColorRef.current, dabMode);
             historyRef.current.saveToHistory();
             reportMask();
 
             // After the commit, so the handler observes the mask it was told about.
-            notifyObjectDetected(detected);
-            return detected;
+            notifyObjectDetected(detection.object);
+            return detection.object;
         },
         [maskContext, reportMask, notifyObjectDetected],
     );
@@ -568,23 +574,8 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         undefined,
     );
 
-    const handleMouseDown = useCallback(
+    const beginStroke = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>) => {
-            e.preventDefault();
-            if (isPanningRef.current || isSpaceKeyDownRef.current) return;
-
-            if (modeRef.current === 'auto') {
-                // No dab and no `isDrawing`: drawing is a brush notion, and flagging it here
-                // would fire `onDrawingChange` for something that is not a stroke.
-                autoClickStartRef.current = {
-                    x: e.nativeEvent.clientX,
-                    y: e.nativeEvent.clientY,
-                    button: e.nativeEvent.button,
-                    shiftKey: e.nativeEvent.shiftKey,
-                };
-                return;
-            }
-
             const { x, y } = getImageCoordinatesRef.current(e.nativeEvent.clientX, e.nativeEvent.clientY);
             paintDab(x, y, e.nativeEvent);
 
@@ -594,40 +585,71 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         [paintDab, notifyDrawingChange],
     );
 
-    const handleMouseUp = useCallback(
+    const endStroke = useCallback(() => {
+        setIsDrawing(false);
+        notifyDrawingChange(false);
+        historyRef.current.saveToHistory();
+        reportMask();
+    }, [reportMask, notifyDrawingChange]);
+
+    // No dab and no `isDrawing`: drawing is a brush notion, and flagging it here would fire
+    // `onDrawingChange` for something that is not a stroke.
+    const beginAutoClick = useCallback((e: ReactMouseEvent<HTMLCanvasElement>) => {
+        autoClickStartRef.current = {
+            x: e.nativeEvent.clientX,
+            y: e.nativeEvent.clientY,
+            button: e.nativeEvent.button,
+            shiftKey: e.nativeEvent.shiftKey,
+        };
+    }, []);
+
+    const endAutoClick = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>) => {
-            e.preventDefault();
-            // Read through refs: this used to close over a stale `isPanning`, so ending a
-            // space-drag pan also ended the stroke and pushed a history entry.
-            if (isPanningRef.current || isSpaceKeyDownRef.current) return;
+            const start = autoClickStartRef.current;
+            autoClickStartRef.current = undefined;
+            if (!start) return;
 
-            if (modeRef.current === 'auto') {
-                const start = autoClickStartRef.current;
-                autoClickStartRef.current = undefined;
-                if (!start) return;
+            const travel = Math.hypot(e.nativeEvent.clientX - start.x, e.nativeEvent.clientY - start.y);
+            if (travel > AUTO_CLICK_SLOP_PX) return;
 
-                const travel = Math.hypot(e.nativeEvent.clientX - start.x, e.nativeEvent.clientY - start.y);
-                if (travel > AUTO_CLICK_SLOP_PX) return;
+            // One at a time: a queue of clicks against a busy model would replay stale
+            // intentions seconds later.
+            if (isDetectingRef.current) return;
 
-                // One at a time: a queue of clicks against a busy model would replay stale
-                // intentions seconds later.
-                if (isDetectingRef.current) return;
-
-                const point = getImageCoordinatesRef.current(start.x, start.y);
-                const erase = start.shiftKey || start.button === 2;
-                runAutoSelect(point, erase ? 'erase' : 'paint').catch((error: unknown) => {
-                    notifyAutoSelectError(error instanceof Error ? error : new Error(String(error)));
-                });
-                return;
-            }
-
-            setIsDrawing(false);
-            notifyDrawingChange(false);
-            historyRef.current.saveToHistory();
-            reportMask();
+            const point = getImageCoordinatesRef.current(start.x, start.y);
+            runAutoSelect(point, isEraseGesture(start) ? 'erase' : 'paint').catch((error: unknown) => {
+                notifyAutoSelectError(toError(error));
+            });
         },
-        [reportMask, notifyDrawingChange, runAutoSelect, notifyAutoSelectError],
+        [runAutoSelect, notifyAutoSelectError],
     );
+
+    // The pointer half of each mode's behaviour, alongside the presentation half in
+    // `MODE_TOOLS`. Both are exhaustive `Record`s over `MaskEditorMode`, so a new mode is a
+    // compile error until it says what it does — which is what the scattered `mode === 'auto'`
+    // checks this replaced could never enforce.
+    const tools = useMemo<Record<MaskEditorMode, ModeHandlers>>(
+        () => ({
+            paint: { onDown: beginStroke, onUp: endStroke },
+            auto: { onDown: beginAutoClick, onUp: endAutoClick },
+        }),
+        [beginStroke, endStroke, beginAutoClick, endAutoClick],
+    );
+    const toolsRef = useLatest(tools);
+
+    const handleMouseDown = useCallback((e: ReactMouseEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        if (isPanningRef.current || isSpaceKeyDownRef.current) return;
+        toolsRef.current[modeRef.current].onDown(e);
+    }, []);
+
+    const handleMouseUp = useCallback((e: ReactMouseEvent<HTMLCanvasElement>) => {
+        e.preventDefault();
+        // Read through refs: this used to close over a stale `isPanning`, so ending a
+        // space-drag pan also ended the stroke and pushed a history entry.
+        if (isPanningRef.current || isSpaceKeyDownRef.current) return;
+        toolsRef.current[modeRef.current].onUp(e);
+    }, []);
 
     // Report a mid-stroke mask so long strokes are not silent for their whole duration.
     // A plain timer, not a debounce: this fires once when the stroke starts and is cleared
@@ -716,11 +738,6 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         }),
         [setContainer, handleContainerKeyDown, handleContainerMouseDown],
     );
-
-    // The boolean, not the object: `autoSelect` is typically an inline literal whose identity
-    // changes every render, which would defeat the memo below (and with it every context
-    // consumer's render bail-out).
-    const hasAutoSelect = Boolean(autoSelect);
 
     return useMemo(
         () => ({

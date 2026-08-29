@@ -40,8 +40,18 @@ describe('loadSessions', () => {
         expect(fetchOnnx).toHaveBeenCalledWith(CONFIG.decoderUrl, undefined);
         expect(createSession).toHaveBeenCalledTimes(2);
         expect(createSession).toHaveBeenCalledWith(expect.any(ArrayBuffer), { executionProviders: ['wasm'] });
-        expect(sessions.encoderInputNames).toEqual(['encoder_in']);
-        expect(sessions.decoderInputNames).toEqual(['decoder_in']);
+        expect(sessions.encoder.inputNames).toEqual(['encoder_in']);
+        expect(sessions.decoder.inputNames).toEqual(['decoder_in']);
+    });
+
+    /**
+     * The runtime rides back on the result so the engine does not re-import it at each use
+     * site: this is the one place that rewrites the "module not found" failure into an
+     * actionable message.
+     */
+    it('hands the loaded runtime back with the sessions', async () => {
+        const sessions = await loadSessions(CONFIG);
+        expect(sessions.ort.InferenceSession.create).toBe(createSession);
     });
 
     it('passes custom execution providers through', async () => {

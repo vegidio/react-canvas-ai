@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createCanvas } from '../../../src/internal/sam/createCanvas';
+import { createCanvas } from '../../src/internal/createCanvas';
 
 afterEach(() => {
     vi.unstubAllGlobals();
@@ -30,7 +30,7 @@ describe('createCanvas', () => {
         expect(canvas.tagName).toBe('CANVAS');
         expect(canvas.width).toBe(64);
         expect(canvas.height).toBe(32);
-        // Detached on purpose: nothing about preprocessing needs the DOM.
+        // Detached on purpose: none of the scratch surfaces need the DOM.
         expect(canvas.isConnected).toBe(false);
     });
 });

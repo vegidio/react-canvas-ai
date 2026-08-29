@@ -1,8 +1,7 @@
-import type { DetectedObject } from '../hooks/useAutoSelect';
 import type { Rgb } from '../utils';
+import type { ScratchCanvas } from './createCanvas';
 import type { Point } from './geometry';
 import { MASK_THRESHOLD } from '../utils';
-import { createCanvas } from './sam/createCanvas';
 
 /** Shown when the source image reports no usable dimensions. */
 export const FALLBACK_SIZE: Point = { x: 300, y: 200 };
@@ -133,10 +132,16 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
 /**
  * Composites a detected object's silhouette onto the mask layer, upholding the same coverage
  * invariant the brush does: painting lands `color` at the silhouette's alpha, erasing subtracts
- * that alpha. The silhouette's own RGB is ignored — `source-in` on a scratch canvas replaces it
- * with the editor's live colour, so a detected mask retints, exports and undoes exactly like
- * hand-painted strokes. The plugin this replaces took a separate style object instead, which
- * meant every consumer had to pass `maskColor` twice and keep the two in agreement.
+ * that alpha. The silhouette's own RGB is ignored — `source-in` replaces it with the editor's
+ * live colour, so a detected mask retints, exports and undoes exactly like hand-painted
+ * strokes. The plugin this replaces took a separate style object instead, which meant every
+ * consumer had to pass `maskColor` twice and keep the two in agreement.
+ *
+ * Takes the surface the detection was rasterized on and tints it in place. It arrives fresh
+ * from one detection and is drawn once, and the `ImageData` handed to consumers was read off
+ * it beforehand, so nothing observes the tint. Copying those pixels onto a scratch canvas
+ * first — which is what this did — was a full-frame `putImageData` and a second allocation
+ * per click, to rebuild a canvas the pipeline had already produced.
  *
  * The composite operation is saved and restored for the same reason {@link paintMaskDot} does
  * it: the mask context is shared, and leaving `destination-out` in force would turn the next
@@ -145,23 +150,20 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
 export const applyDetectedMask = (
     ctx: CanvasRenderingContext2D,
     size: Point,
-    detected: DetectedObject,
+    silhouette: ScratchCanvas,
     color: string,
     mode: MaskDotMode = 'paint',
 ): void => {
-    const { mask } = detected;
-    const scratch = createCanvas(mask.width, mask.height);
-    const scratchCtx = scratch.getContext('2d');
-    if (!scratchCtx) return;
+    const silhouetteCtx = silhouette.getContext('2d');
+    if (!silhouetteCtx) return;
 
-    scratchCtx.putImageData(mask, 0, 0);
-    scratchCtx.globalCompositeOperation = 'source-in';
-    scratchCtx.fillStyle = color;
-    scratchCtx.fillRect(0, 0, mask.width, mask.height);
+    silhouetteCtx.globalCompositeOperation = 'source-in';
+    silhouetteCtx.fillStyle = color;
+    silhouetteCtx.fillRect(0, 0, silhouette.width, silhouette.height);
 
     const previous = ctx.globalCompositeOperation;
     ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
-    ctx.drawImage(scratch, 0, 0, size.x, size.y);
+    ctx.drawImage(silhouette, 0, 0, size.x, size.y);
     ctx.globalCompositeOperation = previous;
 };
 

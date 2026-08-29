@@ -2,6 +2,7 @@ import type { CSSProperties, ReactElement, Ref } from 'react';
 import { useId, useImperativeHandle, useMemo } from 'react';
 import type { MaskEditorCanvasRef, UseMaskEditorProps } from '../hooks/useMaskEditor';
 import { useMaskEditor } from '../hooks/useMaskEditor';
+import { MODE_TOOLS } from '../internal/modes';
 import { useLatest } from '../internal/useLatest';
 import { maskEditorLayerStyles } from './MaskEditorLayers';
 
@@ -157,18 +158,17 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
         };
     }, [transform, effectiveScale, isPanning, size]);
 
-    // Pan and zoom gestures outrank the mode: mid-pan feedback matters more than the
-    // standing crosshair. `progress` (not `wait`) while detecting — the editor still accepts
-    // pans and zooms, it only queues no second detection.
-    const containerCursorStyle = isPanning
-        ? 'grabbing'
-        : isZoomKeyDown
-          ? 'zoom-in'
-          : mode === 'auto'
-            ? isDetecting
-                ? 'progress'
-                : 'crosshair'
-            : 'default';
+    // Pan and zoom gestures outrank the mode: mid-pan feedback matters more than the mode's
+    // own standing cursor. The mode contributes its two cursors as data, so `progress` (not
+    // `wait`) while detecting — the editor still accepts pans and zooms, it only queues no
+    // second detection — is declared next to the mode rather than nested in here.
+    const containerCursorStyle = ((): string => {
+        if (isPanning) return 'grabbing';
+        if (isZoomKeyDown) return 'zoom-in';
+
+        const tool = MODE_TOOLS[mode];
+        return (isDetecting && tool.busyCursor) || tool.cursor;
+    })();
 
     // Shared with the exported `MaskEditorLayers`, so a headless consumer and this component
     // cannot drift apart on the stacking contract.

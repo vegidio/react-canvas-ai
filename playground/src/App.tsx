@@ -2,8 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import type { AutoSelectStatus, MaskEditorCanvasRef, MaskEditorMode, SamConfig } from 'react-canvas-ai';
 import { MaskEditor, toMask } from 'react-canvas-ai';
 
-const SAMPLE_IMAGE =
-    'https://images.unsplash.com/photo-1724745523440-e9a3982d8994?q=80&w=2367&auto=format&fit=crop&w=900&q=80';
+const SAMPLE_IMAGE = 'https://images.unsplash.com/photo-1724745523440-e9a3982d8994?auto=format&fit=crop&w=900&q=80';
 
 const DEFAULT_ENCODER_URL =
     'https://huggingface.co/Xenova/slimsam-77-uniform/resolve/main/onnx/vision_encoder_quantized.onnx';
@@ -31,8 +30,9 @@ const App = () => {
     );
 
     const statusLine = (() => {
-        if (status === 'error') return `Error: ${errorMessage ?? 'something went wrong'}`;
         switch (status) {
+            case 'error':
+                return `Error: ${errorMessage ?? 'something went wrong'}`;
             case 'loading':
                 return 'Loading SAM model (~14 MB first time, then cached)…';
             case 'detecting':

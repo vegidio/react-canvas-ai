@@ -23,14 +23,18 @@ export const fetchOnnx = async (url: string, signal?: AbortSignal): Promise<Arra
         throw new Error(`SAM model fetch failed: ${response.status} ${response.statusText} ${url}`);
     }
 
-    // Persisting is best-effort and gets its own guard: a quota or private-mode failure on
-    // `put` must not discard the response we already paid to download. The clone is taken
-    // before `arrayBuffer()` consumes the body.
-    try {
-        const cache = await caches.open(CACHE_NAME);
-        await cache.put(url, response.clone());
-    } catch {
-        // Nothing to do — the next visit downloads again.
+    // Persisting is best-effort, so it is fired and not awaited: a ~14 MB write to Cache
+    // Storage is not something session creation should wait on, and a quota or private-mode
+    // failure must not discard the response we already paid to download. The clone is taken
+    // synchronously, before `arrayBuffer()` below consumes the body.
+    if (typeof caches !== 'undefined') {
+        const clone = response.clone();
+        void caches
+            .open(CACHE_NAME)
+            .then((cache) => cache.put(url, clone))
+            .catch(() => {
+                // Nothing to do — the next visit downloads again.
+            });
     }
 
     return await response.arrayBuffer();

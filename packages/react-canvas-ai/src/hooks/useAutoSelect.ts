@@ -1,30 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { DetectedObject } from '../internal/detection';
 import type { Point } from '../internal/geometry';
-import type { SamEngine } from '../internal/sam/engine';
+import type { Detection, SamEngine } from '../internal/sam/engine';
+import { toError } from '../internal/toError';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 
-/** A bounding box in canvas-pixel coordinates. */
-export type BoundingBox = {
-    x: number;
-    y: number;
-    width: number;
-    height: number;
-};
-
-/**
- * A single object detected in the source image.
- *
- * `mask` is an alpha-only silhouette sized to the editor's canvas: non-zero alpha marks the
- * object, the RGB channels are ignored. The editor tints it with the live `maskColor` before
- * compositing, so a detected mask is pixel-identical to a hand-painted one.
- */
-export type DetectedObject = {
-    id: string;
-    /** The model's confidence for this mask, nominally 0-1. */
-    score: number;
-    bbox: BoundingBox;
-    mask: ImageData;
-};
+export type { BoundingBox, DetectedObject } from '../internal/detection';
 
 /** Configuration for the bundled SAM (SlimSAM-77) backend. */
 export type SamConfig = {
@@ -51,6 +32,13 @@ export type SamConfig = {
 
 /** Lifecycle state of the auto-selection backend. */
 export type AutoSelectStatus = 'idle' | 'loading' | 'ready' | 'detecting' | 'error';
+
+/**
+ * The backend's standing state, with `'detecting'` left out: that one is not a state the
+ * engine settles into but a count of calls in flight, and modelling it as a fifth state meant
+ * writing the lifecycle down twice and reconciling the two by hand.
+ */
+type EnginePhase = 'idle' | 'loading' | 'ready' | 'error';
 
 /** Options for the editor's AI auto-selection mode. */
 export type AutoSelectOptions = {
@@ -92,8 +80,11 @@ export type UseAutoSelectReturn = {
      * `undefined` for an empty or below-`minScore` result. Rejections are the caller's to
      * route — only warm-up failures reach `onError` from here, or a failed detection would
      * be reported twice.
+     *
+     * Resolves the {@link Detection} pair rather than the bare object: the editor composites
+     * from the surface and hands `object` on to consumers.
      */
-    detect: (point: Point, target: Point) => Promise<DetectedObject | undefined>;
+    detect: (point: Point, target: Point) => Promise<Detection | undefined>;
 };
 
 /**
@@ -102,8 +93,6 @@ export type UseAutoSelectReturn = {
  */
 const samConfigKey = (sam: SamConfig): string =>
     JSON.stringify([sam.encoderUrl, sam.decoderUrl, sam.wasmPaths, sam.executionProviders, sam.debug]);
-
-const toError = (error: unknown): Error => (error instanceof Error ? error : new Error(String(error)));
 
 /**
  * Owns the SAM engine lifecycle for `useMaskEditor`: lazy loading of the inference chunk,
@@ -116,8 +105,16 @@ const toError = (error: unknown): Error => (error instanceof Error ? error : new
 export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectReturn => {
     const { config, image, shouldWarm } = options;
 
-    const [status, setStatus] = useState<AutoSelectStatus>('idle');
-    const [isDetecting, setIsDetecting] = useState(false);
+    const [phase, setPhase] = useState<EnginePhase>('idle');
+    // Counted rather than a boolean: `selectAt` can overlap a click, and the first one to
+    // finish must not clear the flag while the other is still running.
+    const [pending, setPending] = useState(0);
+
+    // Both derived from the one pair above, so the two can never describe different moments —
+    // as separate state they could, and did: overlapping detections published `'ready'` while
+    // `isDetecting` was still true.
+    const isDetecting = pending > 0;
+    const status: AutoSelectStatus = isDetecting ? 'detecting' : phase;
 
     const samKey = config ? samConfigKey(config.sam) : undefined;
 
@@ -125,15 +122,12 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
     const imageRef = useLatest(image);
     const engineRef = useRef<{ key: string; engine: SamEngine } | undefined>(undefined);
     const warmAbortRef = useRef<AbortController | undefined>(undefined);
-    // Counted rather than a boolean: `selectAt` can overlap a click, and the first one to
-    // finish must not clear the flag while the other is still running.
-    const pendingRef = useRef(0);
 
     const notifyStatusChange = useEventCallback<[AutoSelectStatus]>(config?.onStatusChange);
     const notifyError = useEventCallback<[Error]>(config?.onError);
 
     // Mirrors committed status changes to the component-consumer callback. An effect rather
-    // than calls next to each `setStatus`: those run inside async continuations where a stale
+    // than calls next to each `setPhase`: those run inside async continuations where a stale
     // closure could report transitions out of order.
     const lastNotifiedRef = useRef<AutoSelectStatus>('idle');
     useEffect(() => {
@@ -174,15 +168,15 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
         warmAbortRef.current?.abort();
         warmAbortRef.current = controller;
 
-        setStatus('loading');
+        setPhase('loading');
         ensureEngine()
             .then((engine) => engine.prepare(image, controller.signal))
             .then(() => {
-                if (!controller.signal.aborted) setStatus('ready');
+                if (!controller.signal.aborted) setPhase('ready');
             })
             .catch((error: unknown) => {
                 if (controller.signal.aborted) return;
-                setStatus('error');
+                setPhase('error');
                 notifyError(toError(error));
             });
 
@@ -200,28 +194,25 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
     }, []);
 
     const detect = useCallback(
-        async (point: Point, target: Point): Promise<DetectedObject | undefined> => {
+        async (point: Point, target: Point): Promise<Detection | undefined> => {
             const current = configRef.current;
             if (!current) throw new Error('[MaskEditor] Auto-selection needs `autoSelect` to be configured.');
 
             const img = imageRef.current;
             if (!img) throw new Error('[MaskEditor] Auto-selection needs the image to finish loading.');
 
-            pendingRef.current += 1;
-            setIsDetecting(true);
-            setStatus('detecting');
+            setPending((count) => count + 1);
 
             try {
                 const engine = await ensureEngine();
                 const detected = await engine.detect(img, point, target, { minScore: current.minScore });
-                setStatus('ready');
+                setPhase('ready');
                 return detected;
             } catch (error) {
-                setStatus('error');
+                setPhase('error');
                 throw toError(error);
             } finally {
-                pendingRef.current -= 1;
-                if (pendingRef.current === 0) setIsDetecting(false);
+                setPending((count) => count - 1);
             }
         },
         [ensureEngine],

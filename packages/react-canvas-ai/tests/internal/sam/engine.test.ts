@@ -35,6 +35,22 @@ const TARGET = { x: 200, y: 100 };
 
 const encoderRun = vi.fn();
 const decoderRun = vi.fn();
+const encoderRelease = vi.fn(async () => undefined);
+const decoderRelease = vi.fn(async () => undefined);
+
+/** The shape `loadSessions` resolves to: both sessions plus the runtime they were made with. */
+const makeSessions = (decoderInputNames: string[]) => ({
+    ort: { Tensor: FakeTensor },
+    encoder: { run: encoderRun, inputNames: ['pixel_values'], release: encoderRelease },
+    decoder: { run: decoderRun, inputNames: decoderInputNames, release: decoderRelease },
+});
+
+/** What `logitsToMask` hands back: the pixels, their box, and the surface they were drawn on. */
+const makeRasterized = (bbox: { x: number; y: number; width: number; height: number }) => ({
+    mask: new ImageData(2, 2),
+    bbox,
+    silhouette: document.createElement('canvas'),
+});
 
 /** Fabricates a decoder output: 3 candidate masks of 4×4 logits, plane i filled with i + 1. */
 const makeDecoderOutput = (iou: number[]) => {
@@ -47,20 +63,17 @@ const makeDecoderOutput = (iou: number[]) => {
 };
 
 beforeEach(() => {
+    encoderRelease.mockClear();
+    decoderRelease.mockClear();
     vi.mocked(loadSessions)
         .mockReset()
-        .mockResolvedValue({
-            encoder: { run: encoderRun },
-            decoder: { run: decoderRun },
-            encoderInputNames: ['pixel_values'],
-            decoderInputNames: ['image_embeddings', 'input_points', 'input_labels'],
-        } as never);
+        .mockResolvedValue(makeSessions(['image_embeddings', 'input_points', 'input_labels']) as never);
     vi.mocked(imageToEncoderInput)
         .mockReset()
         .mockReturnValue({ data: new Float32Array(4), dims: [1, 3, 1024, 1024], resizedSize: [1024, 512] });
     vi.mocked(logitsToMask)
         .mockReset()
-        .mockReturnValue({ mask: new ImageData(2, 2), bbox: { x: 0, y: 0, width: 2, height: 2 } });
+        .mockReturnValue(makeRasterized({ x: 0, y: 0, width: 2, height: 2 }));
     encoderRun.mockReset().mockResolvedValue({ image_embeddings: { name: 'emb' } });
     decoderRun.mockReset().mockResolvedValue(makeDecoderOutput([0.1, 0.8, 0.3]));
 });
@@ -71,9 +84,11 @@ describe('createSamEngine', () => {
         const detected = await engine.detect(IMAGE, { x: 100, y: 50 }, TARGET);
 
         // Float32Array storage rounds 0.8 to the nearest representable float.
-        expect(detected?.score).toBeCloseTo(0.8, 5);
-        expect(detected?.id).toMatch(/^sam-/);
-        expect(detected?.bbox).toEqual({ x: 0, y: 0, width: 2, height: 2 });
+        expect(detected?.object.score).toBeCloseTo(0.8, 5);
+        expect(detected?.object.id).toMatch(/^sam-/);
+        expect(detected?.object.bbox).toEqual({ x: 0, y: 0, width: 2, height: 2 });
+        // The surface travels with the object so compositing need not rebuild it from `mask`.
+        expect(detected?.silhouette).toBeDefined();
 
         // The logits slice handed to postprocess must be the winning plane (index 1).
         const [logits, shape, resized, targetW, targetH] = vi.mocked(logitsToMask).mock.calls[0];
@@ -114,10 +129,7 @@ describe('createSamEngine', () => {
     });
 
     it('treats an empty mask as no detection', async () => {
-        vi.mocked(logitsToMask).mockReturnValue({
-            mask: new ImageData(2, 2),
-            bbox: { x: 0, y: 0, width: 0, height: 0 },
-        });
+        vi.mocked(logitsToMask).mockReturnValue(makeRasterized({ x: 0, y: 0, width: 0, height: 0 }));
 
         const engine = createSamEngine(CONFIG);
         await expect(engine.detect(IMAGE, { x: 1, y: 1 }, TARGET)).resolves.toBeUndefined();
@@ -138,12 +150,9 @@ describe('createSamEngine', () => {
     });
 
     it('passes positional embeddings through when the decoder wants them', async () => {
-        vi.mocked(loadSessions).mockResolvedValue({
-            encoder: { run: encoderRun },
-            decoder: { run: decoderRun },
-            encoderInputNames: ['pixel_values'],
-            decoderInputNames: ['image_embeddings', 'image_positional_embeddings', 'input_points', 'input_labels'],
-        } as never);
+        vi.mocked(loadSessions).mockResolvedValue(
+            makeSessions(['image_embeddings', 'image_positional_embeddings', 'input_points', 'input_labels']) as never,
+        );
         encoderRun.mockResolvedValue({
             image_embeddings: { name: 'emb' },
             image_positional_embeddings: { name: 'pos' },
@@ -177,6 +186,29 @@ describe('createSamEngine', () => {
 
         expect(loadSessions).toHaveBeenCalledTimes(2);
         expect(encoderRun).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * Dropping the reference is not enough: an `InferenceSession` owns WASM-heap allocations
+     * that JS garbage collection cannot reclaim, so every dispose without this leaked two
+     * models' worth of memory for the lifetime of the page.
+     */
+    it('releases both sessions on dispose', async () => {
+        const engine = createSamEngine(CONFIG);
+        await engine.prepare(IMAGE);
+        engine.dispose();
+        await vi.waitFor(() => {
+            expect(encoderRelease).toHaveBeenCalledTimes(1);
+            expect(decoderRelease).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('survives disposing before the load has resolved', async () => {
+        vi.mocked(loadSessions).mockReturnValue(new Promise(() => {}) as never);
+
+        const engine = createSamEngine(CONFIG);
+        void engine.prepare(IMAGE).catch(() => {});
+        expect(() => engine.dispose()).not.toThrow();
     });
 
     it('retries a failed session load instead of caching the rejection', async () => {

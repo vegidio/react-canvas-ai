@@ -1,7 +1,7 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AutoSelectOptions, DetectedObject } from '../src/hooks/useAutoSelect';
-import type { SamEngine } from '../src/internal/sam/engine';
+import type { Detection, SamEngine } from '../src/internal/sam/engine';
 import { useAutoSelect } from '../src/hooks/useAutoSelect';
 import { createSamEngine } from '../src/internal/sam/engine';
 
@@ -14,9 +14,12 @@ const DETECTED: DetectedObject = {
     mask: new ImageData(2, 2),
 };
 
+/** The engine resolves the object together with the surface it was rasterized on. */
+const DETECTION: Detection = { object: DETECTED, silhouette: document.createElement('canvas') };
+
 const makeEngine = (): SamEngine => ({
     prepare: vi.fn(async () => {}),
-    detect: vi.fn(async () => DETECTED),
+    detect: vi.fn(async () => DETECTION),
     dispose: vi.fn(),
 });
 
@@ -75,25 +78,25 @@ describe('useAutoSelect', () => {
         );
         await waitFor(() => expect(result.current.status).toBe('ready'));
 
-        let detected: DetectedObject | undefined;
+        let detected: Detection | undefined;
         await act(async () => {
             detected = await result.current.detect({ x: 5, y: 5 }, { x: 20, y: 10 });
         });
 
-        expect(detected).toBe(DETECTED);
+        expect(detected).toBe(DETECTION);
         expect(engine.detect).toHaveBeenCalledWith(IMAGE, { x: 5, y: 5 }, { x: 20, y: 10 }, { minScore: 0.5 });
         expect(result.current.status).toBe('ready');
         expect(result.current.isDetecting).toBe(false);
     });
 
     it('flags isDetecting while a detection is in flight', async () => {
-        let release: (value: DetectedObject) => void = () => {};
+        let release: (value: Detection) => void = () => {};
         vi.mocked(engine.detect).mockImplementation(() => new Promise((resolve) => (release = resolve)));
 
         const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
         await waitFor(() => expect(result.current.status).toBe('ready'));
 
-        let pending: Promise<DetectedObject | undefined> = Promise.resolve(undefined);
+        let pending: Promise<Detection | undefined> = Promise.resolve(undefined);
         act(() => {
             pending = result.current.detect({ x: 1, y: 1 }, { x: 20, y: 10 });
         });
@@ -102,7 +105,7 @@ describe('useAutoSelect', () => {
         expect(result.current.status).toBe('detecting');
 
         await act(async () => {
-            release(DETECTED);
+            release(DETECTION);
             await pending;
         });
         expect(result.current.isDetecting).toBe(false);
