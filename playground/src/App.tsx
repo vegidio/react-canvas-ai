@@ -29,6 +29,24 @@ const App = () => {
         [],
     );
 
+    /**
+     * Re-derives the mask from the canvas rather than reusing the `mask` state: the state is
+     * only populated because `onMaskChange` happens to be wired up, and the download should
+     * stand on its own if that prop ever goes away.
+     */
+    const downloadMask = () => {
+        const maskCanvas = canvas.current?.maskCanvas;
+        if (!maskCanvas) return;
+
+        const dataUrl = toMask(maskCanvas);
+        setMask(dataUrl);
+
+        const link = document.createElement('a');
+        link.href = dataUrl;
+        link.download = 'mask.png';
+        link.click();
+    };
+
     const statusLine = (() => {
         switch (status) {
             case 'error':
@@ -118,13 +136,19 @@ const App = () => {
                 </label>
                 <label>
                     Zoom
+                    {/*
+                     * Drives the editor through the ref, not the `scale` prop: that prop only
+                     * seeds the initial zoom, so writing state alone moved nothing. The editor
+                     * echoes back through `onScaleChange`, which keeps this slider in sync with
+                     * wheel-zoom and Reset zoom too.
+                     */}
                     <input
                         type='range'
                         min={0.8}
                         max={4}
                         step={0.1}
                         value={scale}
-                        onChange={(e) => setScale(Number(e.target.value))}
+                        onChange={(e) => canvas.current?.setScale(Number(e.target.value))}
                     />
                     <span className='value'>{Math.round(scale * 100)}%</span>
                 </label>
@@ -144,12 +168,6 @@ const App = () => {
                 <button type='button' onClick={() => canvas.current?.clear()}>
                     Clear
                 </button>
-                <button type='button' onClick={() => canvas.current?.zoomIn()}>
-                    Zoom in
-                </button>
-                <button type='button' onClick={() => canvas.current?.zoomOut()}>
-                    Zoom out
-                </button>
                 {/* resetZoom rather than setScale(1): it also recentres the view. */}
                 <button type='button' onClick={() => canvas.current?.resetZoom()}>
                     Reset zoom
@@ -157,36 +175,10 @@ const App = () => {
                 <button type='button' onClick={() => canvas.current?.setPan(0, 0)}>
                     Center view
                 </button>
-                <button
-                    type='button'
-                    onClick={() => {
-                        const maskCanvas = canvas.current?.maskCanvas;
-                        if (maskCanvas) setMask(toMask(maskCanvas));
-                    }}
-                >
-                    Extract mask
+                <button type='button' onClick={downloadMask}>
+                    Download mask
                 </button>
             </section>
-
-            {mask && (
-                <section className='results'>
-                    <figure>
-                        <figcaption>Original image</figcaption>
-                        <img src={SAMPLE_IMAGE} alt='Original' />
-                    </figure>
-                    <figure>
-                        <figcaption>Extracted mask</figcaption>
-                        <img src={mask} alt='Extracted mask' />
-                    </figure>
-                    <figure>
-                        <figcaption>Overlay</figcaption>
-                        <div className='overlay'>
-                            <img src={SAMPLE_IMAGE} alt='Original for overlay' />
-                            <img src={mask} alt='Mask overlay' className='overlay-mask' />
-                        </div>
-                    </figure>
-                </section>
-            )}
 
             {mask && <img src={mask} className='mask-preview' alt='Live mask preview' />}
         </main>

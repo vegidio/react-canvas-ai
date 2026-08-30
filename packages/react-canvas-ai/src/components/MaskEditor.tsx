@@ -84,6 +84,7 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
         isPanning,
         isZoomKeyDown,
         setPan,
+        setScale,
         effectiveScale,
         zoomIn,
         zoomOut,
@@ -131,12 +132,13 @@ export const MaskEditor = ({ ref, className, style, ...hookProps }: MaskEditorPr
             clear,
             resetZoom,
             setPan,
+            setScale,
             zoomIn,
             zoomOut,
             setMode,
             selectAt,
         }),
-        [maskCanvasRef, undo, redo, clear, resetZoom, setPan, zoomIn, zoomOut, setMode, selectAt],
+        [maskCanvasRef, undo, redo, clear, resetZoom, setPan, setScale, zoomIn, zoomOut, setMode, selectAt],
     );
 
     const canvasLayerStyle = useMemo<CSSProperties>(() => {

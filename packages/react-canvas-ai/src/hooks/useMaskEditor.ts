@@ -233,6 +233,7 @@ export type MaskEditorCanvasRef = Pick<
     | 'clear'
     | 'resetZoom'
     | 'setPan'
+    | 'setScale'
     | 'zoomIn'
     | 'zoomOut'
     | 'setMode'
