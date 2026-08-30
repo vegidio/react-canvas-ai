@@ -37,17 +37,27 @@ export const drawCursorCircle = (ctx: CanvasRenderingContext2D, options: CursorC
 export type MaskDotMode = 'paint' | 'erase';
 
 /**
- * Stamps a single filled brush dab onto the mask layer.
+ * Paints one brush dab onto the mask layer, joined to the previous one.
+ *
+ * `from` is where the previous dab of this stroke landed, and `undefined` at the start of one.
+ * Given a `from`, the dab is a round-capped segment rather than an isolated circle: move events
+ * arrive at most once a frame, so anything faster than a brush width per frame used to land as a
+ * row of disconnected dots. For a hard, opaque, circular brush a stroked line covers exactly what
+ * stamping dabs along the segment would, in one draw call rather than dozens.
+ *
+ * The segment is a single stroked path on purpose. Stroking it *and* filling a circle at the far
+ * end would composite the overlap twice, which under `destination-out` subtracts anti-aliased
+ * alpha twice and leaves a seam running down the middle of every erased track.
  *
  * Erasing composites with `destination-out`, subtracting the dab's alpha from what is already
  * there. Painting an opaque "background" colour instead — which is what this used to do — cannot
  * work on a layer drawn over the image at `maskOpacity`: it smears that colour across the photo
  * rather than revealing it, and leaves the pixel indistinguishable from a painted one on export.
  */
-export const paintMaskDot = (
+export const paintMaskStroke = (
     ctx: CanvasRenderingContext2D,
-    x: number,
-    y: number,
+    from: Point | undefined,
+    to: Point,
     radius: number,
     color: string,
     mode: MaskDotMode = 'paint',
@@ -59,9 +69,22 @@ export const paintMaskDot = (
     ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
 
     ctx.beginPath();
-    ctx.fillStyle = color;
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
+
+    if (from) {
+        // `radius * 2` because the brush radius is the half-width the round caps and joins
+        // reproduce at each end, making the swept shape identical to the circular dab.
+        ctx.strokeStyle = color;
+        ctx.lineWidth = radius * 2;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.moveTo(from.x, from.y);
+        ctx.lineTo(to.x, to.y);
+        ctx.stroke();
+    } else {
+        ctx.fillStyle = color;
+        ctx.arc(to.x, to.y, radius, 0, Math.PI * 2);
+        ctx.fill();
+    }
 
     ctx.globalCompositeOperation = previous;
 };
@@ -143,7 +166,7 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
  * first — which is what this did — was a full-frame `putImageData` and a second allocation
  * per click, to rebuild a canvas the pipeline had already produced.
  *
- * The composite operation is saved and restored for the same reason {@link paintMaskDot} does
+ * The composite operation is saved and restored for the same reason {@link paintMaskStroke} does
  * it: the mask context is shared, and leaving `destination-out` in force would turn the next
  * peer draw into an erase.
  */

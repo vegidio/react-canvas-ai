@@ -1,12 +1,13 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefCallback, RefObject } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { MaskDotMode } from '../internal/canvas';
 import type { DetectedObject } from '../internal/detection';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import type { MaskEditorMode } from '../internal/modes';
 import type { ElementHandle } from '../internal/useElementRef';
 import type { AutoSelectOptions, AutoSelectStatus } from './useAutoSelect';
-import { applyDetectedMask, applyMaskImage, paintMaskDot, recolorMask } from '../internal/canvas';
+import { applyDetectedMask, applyMaskImage, paintMaskStroke, recolorMask } from '../internal/canvas';
 import { MaskEditorDefaults } from '../internal/defaults';
 import { clampToSize } from '../internal/geometry';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
@@ -491,17 +492,34 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         recolorMask(maskContext, size, hexToRgb(maskColor));
     }, [maskContext, maskColor, size]);
 
+    // Where the last dab of the current stroke landed, so the next one can be joined to it.
+    // Image coordinates, matching what the brush paints in, and the mode alongside because a
+    // paint dab and an erase dab must never be joined to each other.
+    const lastDabRef = useRef<{ point: Point; mode: MaskDotMode } | undefined>(undefined);
+
     /**
-     * Stamps one brush dab for a pointer event. Both the freehand move handler and mousedown
-     * paint identically, so the decision lives here rather than being repeated at each call
-     * site. Whether the brush runs at all is the mode descriptor's business, checked once by
-     * each of the two entry points rather than a third time here.
+     * Paints one brush dab for a pointer event, joined to the previous dab of the same stroke.
+     * Both the freehand move handler and mousedown paint identically, so the decision lives here
+     * rather than being repeated at each call site. Whether the brush runs at all is the mode
+     * descriptor's business, checked once by each of the two entry points rather than a third
+     * time here.
+     *
+     * The join is broken when the gesture flips, because `isEraseGesture` is evaluated per dab:
+     * shift pressed mid-stroke switches a stroke from adding coverage to taking it away, and a
+     * connector drawn in the new mode across ground covered in the old one is not what the hand
+     * asked for.
      */
     const paintDab = useCallback(
         (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
             if (!maskContext) return;
-            const dabMode = isEraseGesture(evt) ? 'erase' : 'paint';
-            paintMaskDot(maskContext, x, y, cursorSizeRef.current, maskColorRef.current, dabMode);
+
+            const dabMode: MaskDotMode = isEraseGesture(evt) ? 'erase' : 'paint';
+            const last = lastDabRef.current;
+            const from = last && last.mode === dabMode ? last.point : undefined;
+            const to = { x, y };
+
+            paintMaskStroke(maskContext, from, to, cursorSizeRef.current, maskColorRef.current, dabMode);
+            lastDabRef.current = { point: to, mode: dabMode };
         },
         [maskContext],
     );
@@ -578,6 +596,10 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     const beginStroke = useCallback(
         (e: ReactMouseEvent<HTMLCanvasElement>) => {
             const { x, y } = getImageCoordinatesRef.current(e.nativeEvent.clientX, e.nativeEvent.clientY);
+
+            // Before the dab, not after: a press starts a fresh stroke, and joining it to
+            // wherever the last one ended would rule a line across the whole canvas.
+            lastDabRef.current = undefined;
             paintDab(x, y, e.nativeEvent);
 
             setIsDrawing(true);
@@ -587,6 +609,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     );
 
     const endStroke = useCallback(() => {
+        lastDabRef.current = undefined;
         setIsDrawing(false);
         notifyDrawingChange(false);
         historyRef.current.saveToHistory();
@@ -650,6 +673,19 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         // space-drag pan also ended the stroke and pushed a history entry.
         if (isPanningRef.current || isSpaceKeyDownRef.current) return;
         toolsRef.current[modeRef.current].onUp(e);
+    }, []);
+
+    // A release outside the canvas never reaches the cursor layer's own `mouseup`, so the last
+    // dab would survive the stroke. The next move with a button already held — a press that
+    // started on a toolbar and dragged in — would then be joined to it, ruling a line across the
+    // mask from wherever the previous stroke happened to end.
+    useEffect(() => {
+        const handleWindowMouseUp = () => {
+            lastDabRef.current = undefined;
+        };
+
+        window.addEventListener('mouseup', handleWindowMouseUp);
+        return () => window.removeEventListener('mouseup', handleWindowMouseUp);
     }, []);
 
     // Report a mid-stroke mask so long strokes are not silent for their whole duration.

@@ -81,6 +81,12 @@ export type BrushCursorOptions = {
  *
  * Keyed on the element, so a cursor layer that mounts conditionally still gets its listener —
  * keyed on a ref object this attached once at mount and never noticed a later arrival.
+ *
+ * `pointermove` rather than `mousemove`, for `getCoalescedEvents`: the browser merges several
+ * real pointer positions into each delivered move event, and reading only the last one throws
+ * away the shape of a fast stroke — most visibly on a loaded CPU, where the merging is heaviest.
+ * Every buffered sample is replayed in order so the stroke follows the path the hand actually
+ * took rather than the chord between two frames.
  */
 export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, options: BrushCursorOptions): void => {
     const optionsRef = useLatest(options);
@@ -88,7 +94,7 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
     useEffect(() => {
         if (!cursorCanvas) return;
 
-        const handleMouseMove = (evt: MouseEvent) => {
+        const handlePointerMove = (evt: PointerEvent) => {
             const {
                 paintCursor,
                 getImageCoordinates,
@@ -98,19 +104,45 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
                 isBrushActiveRef,
                 paintDab,
             } = optionsRef.current;
+
+            // Mouse only, so touch and stylus keep behaving exactly as they did under
+            // `mousemove`. Painting with a finger is a separate feature: it needs its own
+            // `touch-action` on the layer, or a drag meant to scroll the page paints instead.
+            if (evt.pointerType !== 'mouse') return;
             if (isPanning) return;
 
             // A mode without a brush leaves the pointer alone entirely: no outline, no dabs.
             if (!isBrushActiveRef.current) return;
 
             const { x, y } = getImageCoordinates(evt.clientX, evt.clientY);
+
+            // Once, from the final position: the outline is a transient overlay that clears
+            // itself on every paint, so drawing it per sample would only overdraw.
             paintCursor(x, y, cursorSizeRef.current);
 
-            if (evt.buttons > 0 && !isSpaceKeyDown) paintDab(x, y, evt);
+            if (evt.buttons === 0 || isSpaceKeyDown) return;
+
+            // Optional call, not optional chaining for tidiness: iOS Safari omits the method
+            // in some contexts, and the event itself is the one sample we know we have.
+            const samples = evt.getCoalescedEvents?.() ?? [];
+
+            if (samples.length === 0) {
+                paintDab(x, y, evt);
+                return;
+            }
+
+            // In order, and each through `getImageCoordinates`: the samples carry viewport
+            // coordinates, and the mask is painted in image space. The gesture is read off the
+            // delivered event rather than each sample, so a shift pressed part-way through a
+            // buffered batch splits the stroke once, at the batch, instead of mid-batch.
+            for (const sample of samples) {
+                const point = getImageCoordinates(sample.clientX, sample.clientY);
+                paintDab(point.x, point.y, evt);
+            }
         };
 
-        cursorCanvas.addEventListener('mousemove', handleMouseMove);
-        return () => cursorCanvas.removeEventListener('mousemove', handleMouseMove);
+        cursorCanvas.addEventListener('pointermove', handlePointerMove);
+        return () => cursorCanvas.removeEventListener('pointermove', handlePointerMove);
     }, [cursorCanvas]);
 };
 

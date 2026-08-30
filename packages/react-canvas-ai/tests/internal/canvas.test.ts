@@ -5,7 +5,7 @@ import {
     applyMaskImage,
     computeTargetSize,
     drawCursorCircle,
-    paintMaskDot,
+    paintMaskStroke,
     recolorMask,
 } from '../../src/internal/canvas';
 import { createCanvas } from '../../src/internal/createCanvas';
@@ -22,6 +22,8 @@ const makeContext = (pixels: number[] = []) => {
             clearRect: vi.fn(),
             beginPath: vi.fn(),
             arc: vi.fn(),
+            moveTo: vi.fn(),
+            lineTo: vi.fn(),
             fill: vi.fn(),
             stroke: vi.fn(),
             drawImage: vi.fn(),
@@ -30,6 +32,8 @@ const makeContext = (pixels: number[] = []) => {
             fillStyle: '',
             strokeStyle: '',
             lineWidth: 0,
+            lineCap: 'butt',
+            lineJoin: 'miter',
             globalAlpha: 1,
             globalCompositeOperation: 'source-over',
         } as unknown as CanvasRenderingContext2D,
@@ -53,54 +57,110 @@ describe('drawCursorCircle', () => {
     });
 });
 
-describe('paintMaskDot', () => {
+describe('paintMaskStroke', () => {
     /**
-     * The composite mode has to be in force *at fill time*, not merely assigned at some point
+     * The composite mode has to be in force *at draw time*, not merely assigned at some point
      * during the call — which is all that reading it afterwards would prove.
      */
-    const modeAtFill = (ctx: CanvasRenderingContext2D) => {
+    const modeAtDraw = (ctx: CanvasRenderingContext2D, call: 'fill' | 'stroke') => {
         const seen: string[] = [];
-        (ctx.fill as unknown as Mock).mockImplementation(() => seen.push(ctx.globalCompositeOperation));
+        (ctx[call] as unknown as Mock).mockImplementation(() => seen.push(ctx.globalCompositeOperation));
         return seen;
     };
 
-    it('fills without clearing or stroking, so dabs accumulate', () => {
-        const { ctx } = makeContext();
-        paintMaskDot(ctx, 3, 4, 7, '#ff0000');
+    describe('starting a stroke', () => {
+        it('fills a dab without clearing or stroking, so dabs accumulate', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, undefined, { x: 3, y: 4 }, 7, '#ff0000');
 
-        expect(ctx.clearRect).not.toHaveBeenCalled();
-        expect(ctx.stroke).not.toHaveBeenCalled();
-        expect(ctx.arc).toHaveBeenCalledWith(3, 4, 7, 0, Math.PI * 2);
-        expect(ctx.fillStyle).toBe('#ff0000');
+            expect(ctx.clearRect).not.toHaveBeenCalled();
+            expect(ctx.stroke).not.toHaveBeenCalled();
+            expect(ctx.arc).toHaveBeenCalledWith(3, 4, 7, 0, Math.PI * 2);
+            expect(ctx.fillStyle).toBe('#ff0000');
+        });
+
+        it('erases by removing coverage instead of painting a colour over it', () => {
+            const { ctx } = makeContext();
+            const seen = modeAtDraw(ctx, 'fill');
+
+            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000', 'erase');
+
+            expect(seen).toEqual(['destination-out']);
+        });
+
+        it('paints with source-over even if the caller left another mode in place', () => {
+            const { ctx } = makeContext();
+            ctx.globalCompositeOperation = 'xor';
+            const seen = modeAtDraw(ctx, 'fill');
+
+            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000');
+
+            expect(seen).toEqual(['source-over']);
+        });
+
+        it('restores the composite mode the caller had set', () => {
+            const { ctx } = makeContext();
+            ctx.globalCompositeOperation = 'multiply';
+            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000', 'erase');
+
+            // A leaked `destination-out` would make the next `drawImage` — the initial-mask
+            // conversion — erase the canvas instead of filling it.
+            expect(ctx.globalCompositeOperation).toBe('multiply');
+        });
     });
 
-    it('erases by removing coverage instead of painting a colour over it', () => {
-        const { ctx } = makeContext();
-        const seen = modeAtFill(ctx);
+    describe('continuing a stroke', () => {
+        it('joins the previous dab to the new one, so fast moves are not a row of dots', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, { x: 10, y: 20 }, { x: 90, y: 140 }, 6, '#ff0000');
 
-        paintMaskDot(ctx, 1, 2, 3, '#ff0000', 'erase');
+            expect(ctx.moveTo).toHaveBeenCalledWith(10, 20);
+            expect(ctx.lineTo).toHaveBeenCalledWith(90, 140);
+            expect(ctx.stroke).toHaveBeenCalled();
+        });
 
-        expect(seen).toEqual(['destination-out']);
-    });
+        it('strokes at the brush diameter with round ends, reproducing the dab at each end', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 6, '#00ff00');
 
-    it('paints with source-over even if the caller left another mode in place', () => {
-        const { ctx } = makeContext();
-        ctx.globalCompositeOperation = 'xor';
-        const seen = modeAtFill(ctx);
+            expect(ctx.lineWidth).toBe(12);
+            expect(ctx.lineCap).toBe('round');
+            expect(ctx.lineJoin).toBe('round');
+            expect(ctx.strokeStyle).toBe('#00ff00');
+        });
 
-        paintMaskDot(ctx, 1, 2, 3, '#ff0000');
+        /**
+         * Stroking the segment *and* filling a circle at its end would composite the overlap
+         * twice, which under `destination-out` subtracts anti-aliased alpha twice and leaves a
+         * seam running down the middle of every erased track.
+         */
+        it('draws the segment once, without also filling a dab at the end', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 6, '#ff0000');
 
-        expect(seen).toEqual(['source-over']);
-    });
+            expect(ctx.fill).not.toHaveBeenCalled();
+            expect(ctx.arc).not.toHaveBeenCalled();
+            expect(ctx.stroke).toHaveBeenCalledTimes(1);
+        });
 
-    it('restores the composite mode the caller had set', () => {
-        const { ctx } = makeContext();
-        ctx.globalCompositeOperation = 'multiply';
-        paintMaskDot(ctx, 1, 2, 3, '#ff0000', 'erase');
+        it('erases along the segment and restores the composite mode the caller had set', () => {
+            const { ctx } = makeContext();
+            ctx.globalCompositeOperation = 'multiply';
+            const seen = modeAtDraw(ctx, 'stroke');
 
-        // A leaked `destination-out` would make the next `drawImage` — the initial-mask
-        // conversion — erase the canvas instead of filling it.
-        expect(ctx.globalCompositeOperation).toBe('multiply');
+            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 3, '#ff0000', 'erase');
+
+            expect(seen).toEqual(['destination-out']);
+            expect(ctx.globalCompositeOperation).toBe('multiply');
+        });
+
+        it('opens a fresh path, so a segment cannot inherit the last one', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 3, '#ff0000');
+
+            expect(ctx.beginPath).toHaveBeenCalledTimes(1);
+            expect(ctx.clearRect).not.toHaveBeenCalled();
+        });
     });
 });
 

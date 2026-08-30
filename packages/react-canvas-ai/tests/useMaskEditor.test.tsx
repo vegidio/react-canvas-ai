@@ -53,9 +53,26 @@ const setup = (props: Partial<UseMaskEditorProps> = {}) => {
     return { ...utils, state, cursorCanvas, onDrawingChange };
 };
 
-const move = (el: HTMLElement, init: MouseEventInit = {}) =>
+/**
+ * The brush listens on `pointermove` so it can replay `getCoalescedEvents`, so the tests have to
+ * speak the same event. `coalesced`, when given, is the buffered samples the browser merged into
+ * this one delivery — the positions a fast stroke has to be reconstructed from.
+ */
+const move = (el: HTMLElement, init: PointerEventInit = {}, coalesced?: { clientX: number; clientY: number }[]) =>
     act(() => {
-        el.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, ...init }));
+        const evt = new PointerEvent('pointermove', {
+            bubbles: true,
+            pointerType: 'mouse',
+            clientX: 5,
+            clientY: 5,
+            ...init,
+        });
+
+        if (coalesced) {
+            Object.defineProperty(evt, 'getCoalescedEvents', { value: () => coalesced });
+        }
+
+        el.dispatchEvent(evt);
     });
 
 describe('late-mounting canvases', () => {
@@ -111,7 +128,7 @@ describe('late-mounting canvases', () => {
         const cursorCanvas = state().cursorCanvasRef.current as HTMLCanvasElement;
         expect(cursorCanvas).toBeInstanceOf(HTMLCanvasElement);
 
-        // A native mousemove, not the declarative onMouseDown prop: this is the listener
+        // A native pointermove, not the declarative onMouseDown prop: this is the listener
         // `useBrushCursor` attaches imperatively, and painting proves the mask layer also got
         // its 2D context. Both used to be wired once at mount and never again.
         const maskCtx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
@@ -119,7 +136,13 @@ describe('late-mounting canvases', () => {
 
         act(() => {
             cursorCanvas.dispatchEvent(
-                new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, buttons: 1 }),
+                new PointerEvent('pointermove', {
+                    bubbles: true,
+                    pointerType: 'mouse',
+                    clientX: 5,
+                    clientY: 5,
+                    buttons: 1,
+                }),
             );
         });
 
@@ -341,6 +364,165 @@ describe('brush cursor', () => {
 
         // Space is held, so the stroke must not land even though a button is down.
         expect(arc.mask).not.toHaveBeenCalled();
+    });
+    it('ignores touch and stylus, which have their own scrolling behaviour', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const arc = layers(state);
+
+        move(cursorCanvas(), { pointerType: 'touch', buttons: 1 });
+
+        expect(arc.mask).not.toHaveBeenCalled();
+        expect(arc.cursor).not.toHaveBeenCalled();
+    });
+});
+
+/**
+ * Move events are delivered at most once a frame, so a stroke faster than a brush width per
+ * frame used to land as a row of disconnected dots. Two things keep it continuous: consecutive
+ * dabs are joined into a segment, and every position the browser buffered into one delivery is
+ * replayed rather than only the last.
+ */
+describe('stroke continuity', () => {
+    /**
+     * Spies on the mask layer's path calls: `arc` is an isolated dab, `lineTo` a join.
+     *
+     * Cleared on install, because `vitest-canvas-mock` already supplies these as mocks and
+     * `spyOn` hands back the existing one — history and all. Without the reset, a spy taken
+     * part-way through a test would count the dabs that came before it.
+     */
+    const strokes = (state: () => ReturnType<typeof useMaskEditor>) => {
+        const maskCtx = state().maskCanvasRef.current?.getContext('2d') as CanvasRenderingContext2D;
+        const spies = {
+            arc: vi.spyOn(maskCtx, 'arc'),
+            moveTo: vi.spyOn(maskCtx, 'moveTo'),
+            lineTo: vi.spyOn(maskCtx, 'lineTo'),
+        };
+
+        for (const spy of Object.values(spies)) spy.mockClear();
+        return spies;
+    };
+
+    const press = (el: HTMLElement, init: MouseEventInit = {}) =>
+        act(() => {
+            el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, buttons: 1, ...init }));
+        });
+
+    const release = (el: HTMLElement) =>
+        act(() => {
+            el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+        });
+
+    it('joins consecutive positions into a segment instead of stamping separate dots', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const path = strokes(state);
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        move(cursorCanvas(), { clientX: 200, clientY: 160, buttons: 1 });
+
+        // The press is the isolated dab that opens the stroke; the move is joined to it.
+        expect(path.arc).toHaveBeenCalledTimes(1);
+        expect(path.moveTo).toHaveBeenCalledTimes(1);
+        expect(path.lineTo).toHaveBeenCalledTimes(1);
+    });
+
+    it('replays every position the browser buffered into one delivery', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const path = strokes(state);
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        move(cursorCanvas(), { clientX: 200, clientY: 160, buttons: 1 }, [
+            { clientX: 60, clientY: 50 },
+            { clientX: 130, clientY: 110 },
+            { clientX: 200, clientY: 160 },
+        ]);
+
+        // One segment per sample, not one for the whole delivery: the chord between two frames
+        // is not the path the hand took.
+        expect(path.lineTo).toHaveBeenCalledTimes(3);
+    });
+
+    it('starts a fresh stroke on a press, rather than joining to where the last one ended', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        move(cursorCanvas(), { clientX: 40, clientY: 40, buttons: 1 });
+        release(cursorCanvas());
+
+        const path = strokes(state);
+        press(cursorCanvas(), { clientX: 300, clientY: 220 });
+
+        // A join here would rule a line clear across the mask from the previous stroke's end.
+        expect(path.arc).toHaveBeenCalledTimes(1);
+        expect(path.lineTo).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The cursor layer only hears a release that happens over it. A press that started on a
+     * toolbar and dragged in arrives as a move with a button already held, and joining that to
+     * a dab left over from an earlier stroke would rule a line across the mask.
+     */
+    it('drops the last dab when the button is released outside the canvas', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        move(cursorCanvas(), { clientX: 40, clientY: 40, buttons: 1 });
+
+        act(() => {
+            window.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+        });
+
+        const path = strokes(state);
+        move(cursorCanvas(), { clientX: 300, clientY: 220, buttons: 1 });
+
+        expect(path.arc).toHaveBeenCalledTimes(1);
+        expect(path.lineTo).not.toHaveBeenCalled();
+    });
+
+    /**
+     * iOS Safari omits `getCoalescedEvents` in some contexts — the omission that forced the
+     * first attempt at this upstream to be reverted. The delivered event is then the one
+     * sample there is, and the stroke still has to land.
+     */
+    it('falls back to the delivered position where coalesced events are unavailable', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+        const path = strokes(state);
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        act(() => {
+            const evt = new PointerEvent('pointermove', {
+                bubbles: true,
+                pointerType: 'mouse',
+                clientX: 200,
+                clientY: 160,
+                buttons: 1,
+            });
+            Object.defineProperty(evt, 'getCoalescedEvents', { value: undefined });
+            cursorCanvas().dispatchEvent(evt);
+        });
+
+        expect(path.lineTo).toHaveBeenCalledTimes(1);
+    });
+
+    it('breaks the join when shift flips the stroke from painting to erasing', async () => {
+        const { cursorCanvas, state } = setup();
+        await settle();
+
+        press(cursorCanvas(), { clientX: 10, clientY: 10 });
+        move(cursorCanvas(), { clientX: 40, clientY: 40, buttons: 1 });
+
+        const path = strokes(state);
+        move(cursorCanvas(), { clientX: 80, clientY: 70, buttons: 1, shiftKey: true });
+
+        // A connector drawn in the new mode across ground covered in the old one is not what
+        // the hand asked for, so the erase half opens with its own dab.
+        expect(path.arc).toHaveBeenCalledTimes(1);
+        expect(path.lineTo).not.toHaveBeenCalled();
     });
 });
 
@@ -787,7 +969,13 @@ describe('auto-selection', () => {
 
         act(() => {
             cursorCanvas().dispatchEvent(
-                new MouseEvent('mousemove', { bubbles: true, clientX: 5, clientY: 5, buttons: 1 }),
+                new PointerEvent('pointermove', {
+                    bubbles: true,
+                    pointerType: 'mouse',
+                    clientX: 5,
+                    clientY: 5,
+                    buttons: 1,
+                }),
             );
         });
         mouse(cursorCanvas(), 'mousedown', { buttons: 1 });
