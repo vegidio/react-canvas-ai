@@ -73,7 +73,8 @@ export type BrushCursorOptions = {
      * value, so mode flips never re-attach the native listener.
      */
     isBrushActiveRef: RefObject<boolean>;
-    paintDab: (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
+    /** Takes the whole coalesced batch at once; see `paintDabs` in `useMaskEditor`. */
+    paintDabs: (points: readonly Point[], evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => void;
 };
 
 /**
@@ -102,7 +103,7 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
                 isPanning,
                 isSpaceKeyDown,
                 isBrushActiveRef,
-                paintDab,
+                paintDabs,
             } = optionsRef.current;
 
             // Mouse only, so touch and stylus keep behaving exactly as they did under
@@ -123,22 +124,18 @@ export const useBrushCursor = (cursorCanvas: HTMLCanvasElement | undefined, opti
             if (evt.buttons === 0 || isSpaceKeyDown) return;
 
             // Optional call, not optional chaining for tidiness: iOS Safari omits the method
-            // in some contexts, and the event itself is the one sample we know we have.
-            const samples = evt.getCoalescedEvents?.() ?? [];
-
-            if (samples.length === 0) {
-                paintDab(x, y, evt);
-                return;
-            }
+            // in some contexts, and the delivered event is the one sample we know we have — so
+            // it stands in for the batch rather than being handled by a branch of its own.
+            const coalesced = evt.getCoalescedEvents?.();
+            const samples = coalesced?.length ? coalesced : [evt];
 
             // In order, and each through `getImageCoordinates`: the samples carry viewport
-            // coordinates, and the mask is painted in image space. The gesture is read off the
-            // delivered event rather than each sample, so a shift pressed part-way through a
-            // buffered batch splits the stroke once, at the batch, instead of mid-batch.
-            for (const sample of samples) {
-                const point = getImageCoordinates(sample.clientX, sample.clientY);
-                paintDab(point.x, point.y, evt);
-            }
+            // coordinates, and the mask is painted in image space. Handed over as one run, so
+            // the whole batch becomes a single stroked path.
+            paintDabs(
+                samples.map((sample) => getImageCoordinates(sample.clientX, sample.clientY)),
+                evt,
+            );
         };
 
         cursorCanvas.addEventListener('pointermove', handlePointerMove);

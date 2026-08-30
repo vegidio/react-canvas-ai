@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DetectedObject } from '../internal/detection';
 import type { Point } from '../internal/geometry';
-import type { Detection, DetectOptions, SamEngine } from '../internal/sam/engine';
+import type { Detection, SamEngine } from '../internal/sam/engine';
+import { clampToSize } from '../internal/geometry';
 import { toError } from '../internal/toError';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 
@@ -103,6 +104,13 @@ export type UseAutoSelectReturn = {
     status: AutoSelectStatus;
     isDetecting: boolean;
     /**
+     * Whether the model is warm enough to detect with. Published here rather than left to be
+     * rebuilt from `status`, because `'detecting'` is a *busy* `'ready'` — the engine is loaded
+     * either way — so `status === 'ready'` is not the question a caller means to ask, and anyone
+     * reconstructing the disjunction has to know how `status` is folded to get it right.
+     */
+    isReady: boolean;
+    /**
      * Runs a detection at `point` (canvas pixels), silhouette sized to `target`. Resolves
      * `undefined` for an empty, below-`minScore` or aborted result. Rejections are the
      * caller's to route — only warm-up failures reach `onError` from here, or a failed
@@ -142,6 +150,7 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
     // `isDetecting` was still true.
     const isDetecting = pending > 0;
     const status: AutoSelectStatus = isDetecting ? 'detecting' : phase;
+    const isReady = phase === 'ready';
 
     const samKey = config ? samConfigKey(config.sam) : undefined;
 
@@ -220,6 +229,31 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
         };
     }, []);
 
+    /**
+     * Publishes a detection's progress: the in-flight count the editor's click guard reads, and
+     * the phase consumers render.
+     *
+     * A wrapper rather than an `if (!isPreview)` in front of each of the four writes. A preview
+     * publishes *nothing at all*, so the rule is simply that speculative work does not come
+     * through here — stated once, which is what stops a fifth publication from silently missing
+     * a case. Parking the editor in `'error'` for a throwaway decode that lost a race would
+     * report a broken model the very next click segments with perfectly well.
+     */
+    const track = useCallback(async (run: () => Promise<Detection | undefined>): Promise<Detection | undefined> => {
+        setPending((count) => count + 1);
+
+        try {
+            const detected = await run();
+            setPhase('ready');
+            return detected;
+        } catch (error) {
+            setPhase('error');
+            throw toError(error);
+        } finally {
+            setPending((count) => count - 1);
+        }
+    }, []);
+
     const detect = useCallback(
         async (point: Point, target: Point, request?: DetectRequest): Promise<Detection | undefined> => {
             const current = configRef.current;
@@ -228,32 +262,27 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
             const img = imageRef.current;
             if (!img) throw new Error('[MaskEditor] Auto-selection needs the image to finish loading.');
 
-            // A preview publishes nothing at all: not the count, and not the phase either way.
-            // The count is what the editor's click guard reads, and the phase is what consumers
-            // render — neither should move for work the user never asked for.
-            const isPreview = request?.preview === true;
-            if (!isPreview) setPending((count) => count + 1);
+            // Clamped here rather than by each caller: `target` is already in hand, the pipeline
+            // downstream indexes pixels with the result, and a precondition stated only in prose
+            // is one the next caller will not know about.
+            const run = (): Promise<Detection | undefined> =>
+                ensureEngine().then((engine) =>
+                    engine.detect(img, clampToSize(point, target), target, {
+                        minScore: current.minScore,
+                        signal: request?.signal,
+                    }),
+                );
+
+            if (!request?.preview) return track(run);
 
             try {
-                const engine = await ensureEngine();
-                const detectOptions: DetectOptions = { minScore: current.minScore };
-                if (request?.signal) detectOptions.signal = request.signal;
-
-                const detected = await engine.detect(img, point, target, detectOptions);
-                if (!isPreview) setPhase('ready');
-                return detected;
+                return await run();
             } catch (error) {
-                // Parking the editor in `'error'` — the banner, `onStatusChange('error')`, the
-                // lot — because a throwaway decode nobody asked for lost a race would report a
-                // broken model that the very next click segments with perfectly well.
-                if (!isPreview) setPhase('error');
                 throw toError(error);
-            } finally {
-                if (!isPreview) setPending((count) => count - 1);
             }
         },
-        [ensureEngine],
+        [ensureEngine, track],
     );
 
-    return useMemo(() => ({ status, isDetecting, detect }), [status, isDetecting, detect]);
+    return useMemo(() => ({ status, isDetecting, isReady, detect }), [status, isDetecting, isReady, detect]);
 };

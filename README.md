@@ -117,7 +117,7 @@ Resume editing from a previously saved mask by passing it as the `initialMask` p
 | `onRedoRequest` | `() => void` | No | — | Called when the user requests a redo. |
 | `onMaskChange` | `(mask: string) => void` | No | — | Called with the mask as a data URL. Debounced while drawing. |
 | `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. |
-| `scale` | `number` | No | `1` | Initial zoom scale. |
+| `scale` | `number` | No | `1` | Zoom scale, quasi-controlled: the prop wins when it changes, `setScale`/`zoomIn`/`zoomOut`/the wheel win in between. Omit it to drive the zoom entirely through those. |
 | `minScale` | `number` | No | `0.8` | Minimum zoom scale. |
 | `maxScale` | `number` | No | `4` | Maximum zoom scale. |
 | `onScaleChange` | `(scale: number) => void` | No | — | Called when the zoom scale changes. |

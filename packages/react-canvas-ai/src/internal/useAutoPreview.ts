@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Point } from './geometry';
 import type { Detection } from './sam/engine';
 import { drawPreviewSilhouette } from './canvas';
+import { CLICK_SLOP_PX, distance, toImageLength } from './geometry';
 import { useLatest } from './useLatest';
 
 /**
@@ -21,15 +22,6 @@ import { useLatest } from './useLatest';
  */
 const AUTO_PREVIEW_INTERVAL_MS = 150;
 
-/**
- * How far a click may land from the previewed point and still commit what was previewed.
- *
- * Viewport pixels, and deliberately the same figure as `AUTO_CLICK_SLOP_PX`: past the distance
- * at which a press stops counting as a click at all, we can no longer claim the shape on screen
- * is the one the user was aiming at.
- */
-const AUTO_PREVIEW_REUSE_PX = 4;
-
 /** Fraction of the mask's own opacity the preview fill is drawn at. */
 const PREVIEW_FILL_SCALE = 0.55;
 
@@ -41,11 +33,7 @@ const PREVIEW_OUTLINE_PX = 2;
 
 /** A detection drawn but not committed, and where it was asked for. */
 type PreviewCache = {
-    /**
-     * Viewport coordinates, deliberately: image coordinates stretch with the zoom, which would
-     * turn the fixed reuse radius into a zoom-dependent one — the same reasoning
-     * `AUTO_CLICK_SLOP_PX` is measured by.
-     */
+    /** Viewport coordinates, for the reason {@link CLICK_SLOP_PX} is measured in them. */
     client: Point;
     detection: Detection;
 };
@@ -144,13 +132,17 @@ export const useAutoPreview = (
      */
     const seqRef = useRef(0);
 
+    // Colour and opacity are arguments rather than further reads off `optionsRef`, so that the
+    // recolour effect below depends on the values it actually paints with: as ref reads they
+    // became trigger-only dependencies, which is a shape this codebase's lint does not allow and
+    // has no precedent for suppressing.
     const paint = useCallback(
         (detection: Detection, color: string, opacity: number) => {
-            const { size: target, effectiveScale } = optionsRef.current;
-            const context = cursorContext;
-            if (!context) return;
+            if (!cursorContext) return;
 
-            drawPreviewSilhouette(context, {
+            const { size: target, effectiveScale } = optionsRef.current;
+
+            drawPreviewSilhouette(cursorContext, {
                 size: target,
                 silhouette: detection.silhouette,
                 color,
@@ -159,17 +151,12 @@ export const useAutoPreview = (
                 // The layer is displayed under a CSS scale, so a 2 canvas-px ring vanishes when
                 // zoomed out. Read at draw time only: a zoom change does not re-thicken a ring
                 // already on screen, the next preview does.
-                outlineWidth: Math.max(1, Math.round(PREVIEW_OUTLINE_PX / Math.max(effectiveScale, 0.01))),
+                outlineWidth: toImageLength(PREVIEW_OUTLINE_PX, effectiveScale),
+                rect: detection.paintRect,
             });
         },
         [cursorContext],
     );
-
-    const wipe = useCallback(() => {
-        const { size: target } = optionsRef.current;
-        cursorContext?.clearRect(0, 0, target.x, target.y);
-        setIsPreviewing(false);
-    }, [cursorContext]);
 
     const cancel = useCallback(() => {
         if (timerRef.current !== undefined) clearTimeout(timerRef.current);
@@ -182,15 +169,17 @@ export const useAutoPreview = (
     const clear = useCallback(() => {
         cancel();
         cacheRef.current = undefined;
-        wipe();
-    }, [cancel, wipe]);
+        // The canvas's own dimensions, matching `useCursorPainter`: the two hooks share this
+        // layer, and `size` state lags the element by a commit on an image swap.
+        if (cursorContext) cursorContext.clearRect(0, 0, cursorContext.canvas.width, cursorContext.canvas.height);
+        setIsPreviewing(false);
+    }, [cancel, cursorContext]);
 
     const take = useCallback((client: Point): Detection | undefined => {
         const cached = cacheRef.current;
         if (!cached) return undefined;
 
-        const travel = Math.hypot(client.x - cached.client.x, client.y - cached.client.y);
-        if (travel > AUTO_PREVIEW_REUSE_PX) return undefined;
+        if (distance(client, cached.client) > CLICK_SLOP_PX) return undefined;
 
         cacheRef.current = undefined;
         return cached.detection;
@@ -241,6 +230,23 @@ export const useAutoPreview = (
                 });
         };
 
+        /**
+         * Whether a preview may run at all, as one predicate rather than a subset per call site.
+         * Every gate that is about *this hook having no business drawing* lives here, so a new
+         * one is added once instead of being fitted into whichever sites happen to need it.
+         */
+        const canPreview = (): boolean => {
+            const current = optionsRef.current;
+            return current.active && !current.isPanning && !current.isSpaceKeyDown && current.isReady;
+        };
+
+        /**
+         * Whether a run should wait rather than be abandoned. Deliberately not folded into
+         * {@link canPreview}: a committed detection in flight is a reason to try again shortly,
+         * not a reason there is nothing to preview.
+         */
+        const shouldDefer = (): boolean => optionsRef.current.isDetectingRef.current;
+
         /** The deferred run: fires for wherever the pointer has settled, not where it was armed. */
         const fire = () => {
             timerRef.current = undefined;
@@ -250,11 +256,9 @@ export const useAutoPreview = (
 
             // Re-checked on firing, not only when armed: an interval is still long enough for
             // the mode to change, a pan to start or the model to fall over underneath it.
-            const current = optionsRef.current;
-            if (!current.active || current.isPanning || current.isSpaceKeyDown) return;
-            if (!current.isReady) return;
+            if (!canPreview()) return;
 
-            if (current.isDetectingRef.current) {
+            if (shouldDefer()) {
                 // Re-armed rather than dropped: a preview started here would land after the
                 // click's own commit and preview the thing that was just committed. Arming
                 // again means a pointer at rest still gets its preview once the click
@@ -273,10 +277,7 @@ export const useAutoPreview = (
             // move itself rather than on a timer, so a pointer arriving somewhere new does not
             // wait to be noticed. `timerRef` is checked because a deferred run already owns the
             // next slot, and letting both fire would detect twice for one rest position.
-            const canFireNow =
-                timerRef.current === undefined &&
-                elapsed >= AUTO_PREVIEW_INTERVAL_MS &&
-                !optionsRef.current.isDetectingRef.current;
+            const canFireNow = timerRef.current === undefined && elapsed >= AUTO_PREVIEW_INTERVAL_MS && !shouldDefer();
 
             if (canFireNow) {
                 run(client.x, client.y);
@@ -291,34 +292,30 @@ export const useAutoPreview = (
         };
 
         const handlePointerMove = (evt: PointerEvent) => {
-            const current = optionsRef.current;
-
             // Mouse only, matching the brush: a preview under a finger would sit beneath the
             // hand that asked for it, and a stylus hover is a separate gesture to design for.
             if (evt.pointerType !== 'mouse') return;
-            if (!current.active || current.isPanning || current.isSpaceKeyDown) return;
 
             // Gated here as well as in `fire`: without it, a pointer wandering over a cold or
             // errored model would arm and drop a timer once per interval, forever.
-            if (!current.isReady) return;
+            if (!canPreview()) return;
 
             const client = { x: evt.clientX, y: evt.clientY };
             pointerRef.current = client;
 
-            // Every move asks, including one landing inside the shape already on screen. That
-            // used to short-circuit — the drawing was taken as the answer for anything it
-            // covered — which quietly made objects *within* a preview unreachable: hover the
-            // person, then try to preview the bag they are holding, and nothing happened at all.
-            // SAM answers a point rather than an object, so a point inside a silhouette is a
-            // different question with a legitimately different answer, and the rate limit below
-            // is what keeps asking it affordable.
+            // Every move asks — including one landing inside the shape already drawn, because
+            // SAM answers a point rather than an object and a smaller object nested in a bigger
+            // silhouette has to stay reachable.
+            //
+            // The exception is a move that has not actually gone anywhere. Within the slop, a
+            // click would commit the cached detection unchanged, so re-detecting can only
+            // reproduce the silhouette already on screen — and a hand resting on a mouse jitters
+            // enough to buy a decoder pass every interval, forever, each one queued ahead of the
+            // real click the user is about to make. Gated on the cache *existing*, so a point
+            // whose detection came back empty or failed is still retried.
+            const cached = cacheRef.current;
+            if (cached && distance(client, cached.client) <= CLICK_SLOP_PX) return;
 
-            // What is already drawn survives the move regardless. Clearing on the first pixel of
-            // movement means hand jitter blanks the overlay and opens a hole, so a user hovering
-            // to think gets a flicker loop. A silhouette a moment out of date is a smaller lie
-            // than an empty one, which reads as "nothing here" — and it cannot cause a wrong
-            // commit, because `take` measures against the point that was previewed rather than
-            // against whatever is on screen.
             requestRun(client);
         };
 

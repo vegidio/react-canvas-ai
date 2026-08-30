@@ -1,7 +1,7 @@
 import type { Tensor } from 'onnxruntime-web';
 import type { SamConfig } from '../../hooks/useAutoSelect';
 import type { ScratchCanvas } from '../createCanvas';
-import type { DetectedObject } from '../detection';
+import type { BoundingBox, DetectedObject } from '../detection';
 import type { Point } from '../geometry';
 import { logitsToMask, pickBestMask } from './postprocess';
 import { imagePointToInputSpace, imageToEncoderInput } from './preprocess';
@@ -24,15 +24,24 @@ export type DetectOptions = {
 /**
  * One detection: the shape handed to consumers, plus the surface it was rasterized on.
  *
- * They travel together because they are the same picture in two forms. `object.mask` is the
- * documented output and what `bbox` was measured on; `silhouette` is what the editor draws,
- * saving a full-frame copy in each direction over putting those pixels back onto a canvas.
- * Single-use: the editor tints it in place, which cannot disturb `object.mask` because that
- * snapshot was taken before any tint.
+ * They travel together because they are the same picture in two forms. `object` is the
+ * documented output; `silhouette` is what the editor draws, saving a full-frame copy in each
+ * direction over putting those pixels back onto a canvas.
+ *
+ * Single-use: the editor tints the surface in place. `object.mask` and `object.bbox` are read
+ * from it lazily and so may be materialized after that tint, which is why `mask`'s contract has
+ * always been alpha-only — `source-in` replaces RGB and leaves coverage untouched, so both
+ * values are the same ones an eager read would have produced.
  */
 export type Detection = {
     object: DetectedObject;
     silhouette: ScratchCanvas;
+    /**
+     * A box containing the silhouette, for callers that only need somewhere to draw. Measured
+     * on the low-res mask, so it is conservative rather than tight — `object.bbox` is exact,
+     * and costs a full-frame read to learn.
+     */
+    paintRect: BoundingBox;
 };
 
 /**
@@ -64,19 +73,20 @@ type Embedding = {
 
 export const createSamEngine = (config: SamConfig): SamEngine => {
     let sessionsPromise: Promise<SamSessions> | undefined;
-    let embedding: Embedding | undefined;
+
+    // The encode, held as its promise rather than as its result: an awaited settled promise
+    // hands back its value for free, so the promise is the cache and there is no second pair of
+    // variables to keep in step with it. Storing only the finished embedding meant two callers
+    // arriving together — the warm-up and a detection that did not wait for it — each ran a
+    // full encoder pass over the same image. Nothing made that likely until hover previews
+    // started detecting without being asked to.
+    //
     // Keyed on the element's identity: the editor's loader produces a fresh element per `src`,
     // so a new image invalidates the embedding without any explicit escape hatch. The plugin
     // this was ported from keyed on a caller-supplied `source` value and needed a public
     // `invalidateEmbedding()` for the cases where the identity lied.
-    let embeddingKey: HTMLImageElement | undefined;
-
-    // The encode that is currently running, alongside the one that has finished. Only checking
-    // the settled `embedding` meant two callers arriving together — the warm-up and a detection
-    // that did not wait for it — each ran a full encoder pass over the same image. Nothing made
-    // that likely until hover previews started detecting without being asked to.
     let embeddingPromise: Promise<Embedding> | undefined;
-    let embeddingPromiseKey: HTMLImageElement | undefined;
+    let embeddingKey: HTMLImageElement | undefined;
 
     // The download's own lifetime, which is the load's — not the image's. Threading a caller's
     // per-image signal down to `fetch` instead aborted a 14 MB download every time `src`
@@ -146,8 +156,6 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
         const next: Embedding = { image_embeddings, resizedSize: pre.resizedSize };
         if (image_positional_embeddings) next.image_positional_embeddings = image_positional_embeddings;
 
-        embedding = next;
-        embeddingKey = image;
         return next;
     };
 
@@ -161,17 +169,20 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
      * us no way to cancel anyway, and whose result is cached for the next caller regardless.
      */
     const ensureEmbedding = async (image: HTMLImageElement, signal?: AbortSignal): Promise<Embedding> => {
-        if (embedding && embeddingKey === image) return embedding;
-        if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
+        if (!embeddingPromise || embeddingKey !== image) {
+            // Checked before starting, not only after awaiting: a caller who has already given
+            // up must not kick off a 14 MB encode that nothing is waiting for. A caller joining
+            // an encode already in flight skips this — the run is happening regardless, and its
+            // result is cached for whoever comes next.
+            if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
 
-        if (!embeddingPromise || embeddingPromiseKey !== image) {
-            embeddingPromiseKey = image;
+            embeddingKey = image;
             // A failed encode is not cached, for the reason `getSessions` does not cache a
             // failed load: the next click retries instead of replaying the error forever.
             embeddingPromise = encodeImage(image).catch((error: unknown) => {
-                if (embeddingPromiseKey === image) {
+                if (embeddingKey === image) {
                     embeddingPromise = undefined;
-                    embeddingPromiseKey = undefined;
+                    embeddingKey = undefined;
                 }
                 throw error;
             });
@@ -247,26 +258,33 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
             const maskStart = bestIdx * maskH * maskW;
             const bestLogits = masksData.subarray(maskStart, maskStart + maskH * maskW);
 
-            const { mask, bbox, silhouette } = logitsToMask(
-                bestLogits,
-                [maskH, maskW],
-                emb.resizedSize,
-                target.x,
-                target.y,
-            );
-            if (bbox.width === 0 || bbox.height === 0) return undefined;
+            const rasterized = logitsToMask(bestLogits, [maskH, maskW], emb.resizedSize, target.x, target.y);
 
-            return { object: { id: `sam-${Date.now()}`, score: bestScore, bbox, mask }, silhouette };
+            // Judged on the low-res mask, which is the one pass that has already happened. The
+            // full-resolution box says the same thing about emptiness and costs a megabyte-scale
+            // readback to ask, which a speculative detection should never pay.
+            if (rasterized.isEmpty) return undefined;
+
+            const object: DetectedObject = {
+                id: `sam-${Date.now()}`,
+                score: bestScore,
+                // Accessors, so a hover preview — which reads neither — pays for neither.
+                get bbox() {
+                    return rasterized.readBbox();
+                },
+                get mask() {
+                    return rasterized.readMask();
+                },
+            };
+
+            return { object, silhouette: rasterized.silhouette, paintRect: rasterized.paintRect };
         },
         dispose: () => {
-            embedding = undefined;
-            embeddingKey = undefined;
-
-            // The in-flight encode goes too, or a `detect` after `dispose` would await a
-            // promise whose sessions have since been released. Dropping the reference is all
-            // that is needed: the run itself is uncancellable and its result is now unreachable.
+            // Dropping the reference is all that is needed: the run itself is uncancellable and
+            // its result is now unreachable. It has to go, or a `detect` after `dispose` would
+            // await a promise whose sessions have since been released.
             embeddingPromise = undefined;
-            embeddingPromiseKey = undefined;
+            embeddingKey = undefined;
 
             // Dropping the reference is not enough: an `InferenceSession` owns WASM-heap
             // allocations — the deserialized graph and the runtime's arena — that JS garbage

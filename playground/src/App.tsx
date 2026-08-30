@@ -61,7 +61,6 @@ const App = () => {
         if (!maskCanvas) return;
 
         const dataUrl = toMask(maskCanvas);
-        setMask(dataUrl);
 
         const link = document.createElement('a');
         link.href = dataUrl;
@@ -78,11 +77,13 @@ const App = () => {
             case 'detecting':
                 return 'Detecting object…';
             default:
-                return mode === 'auto'
-                    ? preview
-                        ? 'Auto-select mode: hover an object to preview what a click would select, click to mask it, shift-click to remove one.'
-                        : 'Auto-select mode: click an object to mask it, shift-click to remove one.'
-                    : 'Paint mode: drag to paint, shift-drag or right-drag to erase, ctrl+wheel to zoom, space-drag to pan.';
+                if (mode !== 'auto') {
+                    return 'Paint mode: drag to paint, shift-drag or right-drag to erase, ctrl+wheel to zoom, space-drag to pan.';
+                }
+
+                return preview
+                    ? 'Auto-select mode: hover an object to preview what a click would select, click to mask it, shift-click to remove one.'
+                    : 'Auto-select mode: click an object to mask it, shift-click to remove one.';
         }
     })();
 
@@ -173,10 +174,9 @@ const App = () => {
                 <label>
                     Zoom
                     {/*
-                     * Drives the editor through the ref, not the `scale` prop: that prop only
-                     * seeds the initial zoom, so writing state alone moved nothing. The editor
-                     * echoes back through `onScaleChange`, which keeps this slider in sync with
-                     * wheel-zoom and Reset zoom too.
+                     * Plain controlled state: the `scale` prop drives the editor, and the editor
+                     * echoes its own movement back through `onScaleChange`, which is what keeps
+                     * this slider in step with wheel-zoom and Reset zoom too.
                      */}
                     <input
                         type='range'
@@ -184,7 +184,7 @@ const App = () => {
                         max={4}
                         step={0.1}
                         value={scale}
-                        onChange={(e) => canvas.current?.setScale(Number(e.target.value))}
+                        onChange={(e) => setScale(Number(e.target.value))}
                     />
                     <span className='value'>{Math.round(scale * 100)}%</span>
                 </label>

@@ -1,6 +1,6 @@
 import type { KeyboardEvent as ReactKeyboardEvent, MouseEvent as ReactMouseEvent, RefCallback, RefObject } from 'react';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { MaskDotMode } from '../internal/canvas';
+import type { MaskPaintMode } from '../internal/canvas';
 import type { DetectedObject } from '../internal/detection';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
@@ -10,7 +10,7 @@ import type { ElementHandle } from '../internal/useElementRef';
 import type { AutoSelectOptions, AutoSelectStatus } from './useAutoSelect';
 import { applyDetectedMask, applyMaskImage, paintMaskStroke, recolorMask } from '../internal/canvas';
 import { MaskEditorDefaults } from '../internal/defaults';
-import { clampToSize } from '../internal/geometry';
+import { CLICK_SLOP_PX, distance } from '../internal/geometry';
 import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
 import { MODE_TOOLS } from '../internal/modes';
@@ -83,7 +83,9 @@ export type UseMaskEditorProps = {
      */
     initialMask?: string;
     /**
-     * Current zoom scale (default: 1)
+     * Zoom scale. Reconciled like `cursorSize` and `mode`: the prop wins when it changes, and
+     * `setScale`/`zoomIn`/`zoomOut`/the wheel win in between. Leave it out to drive the zoom
+     * entirely through those (default: 1).
      */
     scale?: number;
     /**
@@ -263,13 +265,6 @@ export type MaskEditorCanvasRef = Pick<
 const MASK_DEBOUNCE_MS = 300;
 
 /**
- * Pointer travel (in viewport px) under which an auto-mode press still counts as a click.
- * Anything farther is a drag — a middle-button pan that started on the canvas, or a slip —
- * and segmenting at its end would surprise.
- */
-const AUTO_CLICK_SLOP_PX = 4;
-
-/**
  * The gesture that takes coverage away rather than adding it: the secondary button, or shift.
  * One definition, because the brush reads it off a live `buttons` bitmask and auto-selection
  * off the `button` recorded at mousedown, and the two silently drifting would mean shift-click
@@ -300,7 +295,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         onRedoRequest,
         onMaskChange,
         initialMask,
-        scale: initialScale = MaskEditorDefaults.scale,
+        scale,
         minScale = MaskEditorDefaults.minScale,
         maxScale = MaskEditorDefaults.maxScale,
         onScaleChange,
@@ -370,7 +365,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     });
 
     const [zoomPanState, zoomPanActions, attachZoomPan] = useZoomPan(size, {
-        initialScale,
+        scale,
         minScale,
         maxScale,
         enableWheelZoom,
@@ -511,30 +506,38 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     // Where the last dab of the current stroke landed, so the next one can be joined to it.
     // Image coordinates, matching what the brush paints in, and the mode alongside because a
     // paint dab and an erase dab must never be joined to each other.
-    const lastDabRef = useRef<{ point: Point; mode: MaskDotMode } | undefined>(undefined);
+    const lastDabRef = useRef<{ point: Point; mode: MaskPaintMode } | undefined>(undefined);
 
     /**
-     * Paints one brush dab for a pointer event, joined to the previous dab of the same stroke.
-     * Both the freehand move handler and mousedown paint identically, so the decision lives here
-     * rather than being repeated at each call site. Whether the brush runs at all is the mode
-     * descriptor's business, checked once by each of the two entry points rather than a third
-     * time here.
+     * Paints a run of brush positions for one pointer event, joined to the previous run of the
+     * same stroke. Both the freehand move handler and mousedown paint through here, so the
+     * decision lives in one place rather than being repeated at each call site. Whether the
+     * brush runs at all is the mode descriptor's business, checked once by each of the two entry
+     * points rather than a third time here.
      *
-     * The join is broken when the gesture flips, because `isEraseGesture` is evaluated per dab:
-     * shift pressed mid-stroke switches a stroke from adding coverage to taking it away, and a
-     * connector drawn in the new mode across ground covered in the old one is not what the hand
-     * asked for.
+     * A run, not a point, because a pointer move carries every coalesced sample since the last
+     * one. Handing the whole batch to a single stroked path is both cheaper — one composite-op
+     * flip and one `stroke()` instead of one per sample — and cleaner under `destination-out`,
+     * where per-sample strokes composite their shared endpoints twice and leave a seam down the
+     * middle of every erased track.
+     *
+     * The gesture is read once per event rather than per sample, so a shift pressed part-way
+     * through a buffered batch splits the stroke at the batch boundary instead of mid-batch. The
+     * join is broken whenever it flips: a connector drawn in the new mode across ground covered
+     * in the old one is not what the hand asked for.
      */
-    const paintDab = useCallback(
-        (x: number, y: number, evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
+    const paintDabs = useCallback(
+        (points: readonly Point[], evt: Pick<MouseEvent, 'buttons' | 'shiftKey'>) => {
             if (!maskContext) return;
 
-            const dabMode: MaskDotMode = isEraseGesture(evt) ? 'erase' : 'paint';
+            const to = points[points.length - 1];
+            if (!to) return;
+
+            const dabMode: MaskPaintMode = isEraseGesture(evt) ? 'erase' : 'paint';
             const last = lastDabRef.current;
             const from = last && last.mode === dabMode ? last.point : undefined;
-            const to = { x, y };
 
-            paintMaskStroke(maskContext, from, to, cursorSizeRef.current, maskColorRef.current, dabMode);
+            paintMaskStroke(maskContext, from, points, cursorSizeRef.current, maskColorRef.current, dabMode);
             lastDabRef.current = { point: to, mode: dabMode };
         },
         [maskContext],
@@ -557,7 +560,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         isPanning: zoomPanState.isPanning,
         isSpaceKeyDown: zoomPanState.isSpaceKeyDown,
         isBrushActiveRef,
-        paintDab,
+        paintDabs,
     });
 
     useBrushSizeWheel(cursorCanvas, {
@@ -577,7 +580,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
      */
     const detectPreview = useCallback(
         (point: Point, target: Point, signal: AbortSignal) =>
-            detectRef.current(clampToSize(point, target), target, { preview: true, signal }),
+            detectRef.current(point, target, { preview: true, signal }),
         [],
     );
 
@@ -591,11 +594,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
         effectiveScale: zoomPanState.effectiveScale,
         getImageCoordinates: zoomPanActions.getImageCoordinates,
         detect: detectPreview,
-        // `'detecting'` is a busy `'ready'`, not a separate point in the lifecycle — the model
-        // is warm either way. Treating them alike is what lets the preview defer to
-        // `isDetectingRef` below and re-arm its trailing run, rather than the busy case falling
-        // out through this check and the re-arm never being reached at all.
-        isReady: autoSelection.status === 'ready' || autoSelection.isDetecting,
+        isReady: autoSelection.isReady,
         isDetectingRef,
         isPanning: zoomPanState.isPanning,
         isSpaceKeyDown: zoomPanState.isSpaceKeyDown,
@@ -608,22 +607,26 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
      * reason auto-selection lives inside the editor — as an external plugin it painted behind
      * the editor's back, so its selections were invisible to undo and `onMaskChange`.
      *
+     * `cached` is a silhouette a hover preview already paid for, and a click that reuses one
+     * must commit *that* shape: a second decoder pass would both cost the user the wait the
+     * preview existed to remove and be free to disagree with what they were looking at when they
+     * pressed.
+     *
      * Rejections propagate: the click path reports them to `autoSelect.onError` (nobody else
      * can hear a click fail), while `selectAt` callers get the rejection itself.
      */
-    /**
-     * The half of {@link runAutoSelect} that touches the mask: composite in the live colour,
-     * snapshot history, report, notify.
-     *
-     * Split out because a hover preview has already paid for its detection, and a click that
-     * reuses it must commit *that* silhouette. A second decoder pass would both cost the user
-     * the wait the preview existed to remove and be free to disagree with the shape they were
-     * looking at when they pressed.
-     */
-    const commitDetection = useCallback(
-        (detection: Detection, dabMode: MaskDotMode): DetectedObject => {
+    const runAutoSelect = useCallback(
+        async (point: Point, dabMode: MaskPaintMode, cached?: Detection): Promise<DetectedObject | undefined> => {
+            const target = sizeRef.current;
+
+            // `??` short-circuits the await entirely on a cache hit, so every side effect below
+            // lands synchronously inside this call rather than a microtask later — the mask is
+            // already updated by the time the click handler returns.
+            const detection = cached ?? (await detectRef.current(point, target));
+            if (!detection) return undefined;
+
             if (!maskContext) throw new Error('[MaskEditor] The mask canvas is not ready.');
-            applyDetectedMask(maskContext, sizeRef.current, detection.silhouette, maskColorRef.current, dabMode);
+            applyDetectedMask(maskContext, target, detection.silhouette, maskColorRef.current, dabMode);
             historyRef.current.saveToHistory();
             reportMask();
 
@@ -632,21 +635,6 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             return detection.object;
         },
         [maskContext, reportMask, notifyObjectDetected],
-    );
-
-    const runAutoSelect = useCallback(
-        async (point: Point, dabMode: MaskDotMode, cached?: Detection): Promise<DetectedObject | undefined> => {
-            const target = sizeRef.current;
-
-            // `??` short-circuits the await entirely on a cache hit, so every side effect below
-            // lands synchronously inside this call rather than a microtask later — the mask is
-            // already updated by the time the click handler returns.
-            const detection = cached ?? (await detectRef.current(clampToSize(point, target), target));
-            if (!detection) return undefined;
-
-            return commitDetection(detection, dabMode);
-        },
-        [commitDetection],
     );
 
     const selectAt = useCallback(
@@ -668,12 +656,12 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             // Before the dab, not after: a press starts a fresh stroke, and joining it to
             // wherever the last one ended would rule a line across the whole canvas.
             lastDabRef.current = undefined;
-            paintDab(x, y, e.nativeEvent);
+            paintDabs([{ x, y }], e.nativeEvent);
 
             setIsDrawing(true);
             notifyDrawingChange(true);
         },
-        [paintDab, notifyDrawingChange],
+        [paintDabs, notifyDrawingChange],
     );
 
     const endStroke = useCallback(() => {
@@ -701,8 +689,9 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             autoClickStartRef.current = undefined;
             if (!start) return;
 
-            const travel = Math.hypot(e.nativeEvent.clientX - start.x, e.nativeEvent.clientY - start.y);
-            if (travel > AUTO_CLICK_SLOP_PX) return;
+            // Anything farther is a drag — a middle-button pan that started on the canvas, or a
+            // slip — and segmenting at its end would surprise.
+            if (distance({ x: e.nativeEvent.clientX, y: e.nativeEvent.clientY }, start) > CLICK_SLOP_PX) return;
 
             // The shape the user is looking at, if they are looking at one and pressed on it.
             const cached = previewRef.current.take(start);

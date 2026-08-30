@@ -15,7 +15,11 @@ const DETECTED: DetectedObject = {
 };
 
 /** The engine resolves the object together with the surface it was rasterized on. */
-const DETECTION: Detection = { object: DETECTED, silhouette: document.createElement('canvas') };
+const DETECTION: Detection = {
+    object: DETECTED,
+    silhouette: document.createElement('canvas'),
+    paintRect: DETECTED.bbox,
+};
 
 const makeEngine = (): SamEngine => ({
     prepare: vi.fn(async () => {}),
@@ -179,6 +183,75 @@ describe('useAutoSelect', () => {
 
         unmount();
         expect(engine.dispose).toHaveBeenCalled();
+    });
+});
+
+/**
+ * `isReady` answers "is the model usable", which is not `status === 'ready'`: `'detecting'` is a
+ * busy `'ready'` and the engine is warm either way. Published here so no caller has to know how
+ * `status` is folded in order to rebuild the disjunction — the hover preview did, and getting it
+ * wrong meant a preview that never armed while a click was in flight.
+ */
+describe('useAutoSelect readiness', () => {
+    it('is false until the warm-up settles', async () => {
+        const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
+
+        expect(result.current.isReady).toBe(false);
+        await waitFor(() => expect(result.current.isReady).toBe(true));
+    });
+
+    it('stays true while a detection is in flight', async () => {
+        const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
+        await waitFor(() => expect(result.current.isReady).toBe(true));
+
+        let settle: (value: Detection) => void = () => {};
+        vi.mocked(engine.detect).mockReturnValue(
+            new Promise<Detection>((resolve) => {
+                settle = resolve;
+            }),
+        );
+
+        let pending: Promise<unknown> | undefined;
+        act(() => {
+            pending = result.current.detect({ x: 1, y: 1 }, { x: 20, y: 10 });
+        });
+
+        await waitFor(() => expect(result.current.status).toBe('detecting'));
+        expect(result.current.isReady).toBe(true);
+
+        await act(async () => {
+            settle(DETECTION);
+            await pending;
+        });
+    });
+
+    it('goes false when the warm-up fails', async () => {
+        vi.mocked(engine.prepare).mockRejectedValue(new Error('boom'));
+
+        const { result } = renderHook(() =>
+            useAutoSelect({ config: { ...CONFIG, onError: () => {} }, image: IMAGE, shouldWarm: true }),
+        );
+
+        await waitFor(() => expect(result.current.status).toBe('error'));
+        expect(result.current.isReady).toBe(false);
+    });
+});
+
+/**
+ * The clamp moved here from the editor's two call sites: `target` is already a parameter, the
+ * SAM pipeline indexes pixels with the result, and a precondition stated only in prose is one
+ * the next caller does not know about.
+ */
+describe('useAutoSelect point clamping', () => {
+    it('clamps the point to the last addressable pixel of the target', async () => {
+        const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
+        await waitFor(() => expect(result.current.isReady).toBe(true));
+
+        await act(async () => {
+            await result.current.detect({ x: 999, y: -5 }, { x: 20, y: 10 });
+        });
+
+        expect(engine.detect).toHaveBeenCalledWith(IMAGE, { x: 19, y: 0 }, { x: 20, y: 10 }, expect.anything());
     });
 });
 

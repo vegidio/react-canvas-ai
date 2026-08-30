@@ -1,5 +1,6 @@
 import { useLayoutEffect } from 'react';
 import { act, renderHook } from '@testing-library/react';
+import type { Mock } from 'vitest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ZoomPanOptions } from '../src/hooks/useZoomPan';
 import { useZoomPan } from '../src/hooks/useZoomPan';
@@ -67,16 +68,16 @@ describe('base scale', () => {
         expect(result.current[0].baseScale).toBe(0.5);
     });
 
-    it('honours initialScale', () => {
-        const { result } = setup({ initialScale: 2 });
+    it('honours the initial scale', () => {
+        const { result } = setup({ scale: 2 });
         expect(result.current[0].scale).toBe(2);
     });
 
-    it('leaves an initialScale above 1 pannable after the mount fit', () => {
+    it('leaves an initial scale above 1 pannable after the mount fit', () => {
         // `scale` and `transform.scale` used to be separate state, and the mount fit wrote the
         // transform without touching the shadow: the editor rendered at 2x but reported a
         // transform scale of 1, so nothing would pan and Space did nothing.
-        const { result } = setup({ initialScale: 2 });
+        const { result } = setup({ scale: 2 });
 
         expect(result.current[0].transform.scale).toBe(2);
 
@@ -697,5 +698,94 @@ describe('keyboardScope', () => {
 
         expect(result.current[0].isSpaceKeyDown).toBe(false);
         outside.remove();
+    });
+});
+
+/**
+ * The zoom is quasi-controlled, the way `mode` and `cursorSize` are: the prop wins whenever it
+ * changes and the actions win in between. It used to seed the reducer and never be read again,
+ * so a consumer's zoom slider type-checked, changed, and moved nothing — the only way in was the
+ * imperative `setScale` on the ref.
+ */
+describe('the scale prop', () => {
+    const setupControlled = (initial?: number) =>
+        renderHook(
+            ({ scale }: { scale?: number }) => {
+                const [state, actions, attach] = useZoomPan(CONTENT, { scale, onScaleChange });
+                useLayoutEffect(() => attach(container), [attach]);
+                return [state, actions] as const;
+            },
+            { initialProps: { scale: initial } },
+        );
+
+    let onScaleChange: Mock<(scale: number) => void>;
+
+    beforeEach(() => {
+        onScaleChange = vi.fn();
+    });
+
+    it('drives the zoom when it changes', () => {
+        const { result, rerender } = setupControlled(1);
+
+        rerender({ scale: 2.5 });
+
+        expect(result.current[0].scale).toBe(2.5);
+        expect(result.current[0].transform.scale).toBe(2.5);
+    });
+
+    it('clamps to the configured bounds', () => {
+        const { result, rerender } = renderHook(
+            ({ scale }: { scale?: number }) => {
+                const [state, , attach] = useZoomPan(CONTENT, { scale, minScale: 0.8, maxScale: 4 });
+                useLayoutEffect(() => attach(container), [attach]);
+                return state;
+            },
+            { initialProps: { scale: 1 as number | undefined } },
+        );
+
+        rerender({ scale: 99 });
+        expect(result.current.scale).toBe(4);
+
+        rerender({ scale: 0.1 });
+        expect(result.current.scale).toBe(0.8);
+    });
+
+    /**
+     * `onScaleChange` reports the editor's *own* movement. Echoing a prop straight back to the
+     * consumer that set it is how a controlled slider ends up fighting itself.
+     */
+    it('does not echo a prop-driven change back through onScaleChange', () => {
+        const { rerender } = setupControlled(1);
+
+        rerender({ scale: 2 });
+
+        expect(onScaleChange).not.toHaveBeenCalled();
+    });
+
+    it('still reports movement the editor made itself', () => {
+        const { result } = setupControlled(1);
+
+        act(() => result.current[1].setScale(3));
+
+        expect(onScaleChange).toHaveBeenCalledWith(3);
+    });
+
+    /** The setter wins in between: a re-render with an unchanged prop must not undo it. */
+    it('leaves the zoom alone while the prop holds still', () => {
+        const { result, rerender } = setupControlled(1);
+
+        act(() => result.current[1].setScale(2));
+        rerender({ scale: 1 });
+
+        expect(result.current[0].scale).toBe(2);
+    });
+
+    it('leaves the zoom entirely to the actions when omitted', () => {
+        const { result, rerender } = setupControlled(undefined);
+
+        act(() => result.current[1].setScale(2));
+        rerender({ scale: undefined });
+
+        expect(result.current[0].scale).toBe(2);
     });
 });

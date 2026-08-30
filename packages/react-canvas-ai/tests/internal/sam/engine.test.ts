@@ -45,11 +45,16 @@ const makeSessions = (decoderInputNames: string[]) => ({
     decoder: { run: decoderRun, inputNames: decoderInputNames, release: decoderRelease },
 });
 
-/** What `logitsToMask` hands back: the pixels, their box, and the surface they were drawn on. */
-const makeRasterized = (bbox: { x: number; y: number; width: number; height: number }) => ({
-    mask: new ImageData(2, 2),
-    bbox,
+/**
+ * What `logitsToMask` hands back: the surface, the facts measured on the low-res mask, and
+ * deferred readers for the full-resolution pixels and their exact box.
+ */
+const makeRasterized = (bbox: { x: number; y: number; width: number; height: number }, isEmpty = false) => ({
     silhouette: document.createElement('canvas'),
+    isEmpty,
+    paintRect: bbox,
+    readMask: vi.fn(() => new ImageData(2, 2)),
+    readBbox: vi.fn(() => bbox),
 });
 
 /** Fabricates a decoder output: 3 candidate masks of 4×4 logits, plane i filled with i + 1. */
@@ -129,10 +134,36 @@ describe('createSamEngine', () => {
     });
 
     it('treats an empty mask as no detection', async () => {
-        vi.mocked(logitsToMask).mockReturnValue(makeRasterized({ x: 0, y: 0, width: 0, height: 0 }));
+        vi.mocked(logitsToMask).mockReturnValue(makeRasterized({ x: 0, y: 0, width: 0, height: 0 }, true));
 
         const engine = createSamEngine(CONFIG);
         await expect(engine.detect(IMAGE, { x: 1, y: 1 }, TARGET)).resolves.toBeUndefined();
+    });
+
+    /**
+     * The whole point of deferring them: a hover preview draws the silhouette and reads neither,
+     * so a speculative detection must not pay for the full-frame readback behind `mask`.
+     */
+    it('reads neither the mask nor the exact box until a consumer asks', async () => {
+        const rasterized = makeRasterized({ x: 0, y: 0, width: 2, height: 2 });
+        vi.mocked(logitsToMask).mockReturnValue(rasterized);
+
+        const engine = createSamEngine(CONFIG);
+        const detected = await engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+
+        expect(rasterized.readMask).not.toHaveBeenCalled();
+        expect(rasterized.readBbox).not.toHaveBeenCalled();
+
+        expect(detected?.object.mask).toBeInstanceOf(ImageData);
+        expect(rasterized.readMask).toHaveBeenCalledTimes(1);
+    });
+
+    /** A bound on where the preview has to composite, carried alongside the surface it bounds. */
+    it('carries the paint rect through to the caller', async () => {
+        const engine = createSamEngine(CONFIG);
+        const detected = await engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+
+        expect(detected?.paintRect).toEqual({ x: 0, y: 0, width: 2, height: 2 });
     });
 
     it('feeds the decoder only the inputs its export declares', async () => {

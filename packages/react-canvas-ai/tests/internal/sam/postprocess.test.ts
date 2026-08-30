@@ -14,9 +14,25 @@ const makeAlphaImage = (width: number, height: number, alphaAt: Array<[number, n
 
 describe('logitsToAlpha', () => {
     it('marks strictly positive logits as covered, RGB stays zero', () => {
-        const image = logitsToAlpha(Float32Array.from([1, -1, 0.5, 0]), 2, 2);
+        const { image } = logitsToAlpha(Float32Array.from([1, -1, 0.5, 0]), 2, 2);
 
         expect([...image.data]).toEqual([0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0]);
+    });
+
+    /**
+     * The bounds come from this pass rather than a scan of the upscaled result, which is what
+     * lets a hover preview skip the full-frame readback entirely.
+     */
+    it('bounds the coverage in the same pass', () => {
+        const { bounds } = logitsToAlpha(Float32Array.from([1, -1, 0.5, 0]), 2, 2);
+
+        expect(bounds).toEqual({ x: 0, y: 0, width: 1, height: 2 });
+    });
+
+    it('reports a zero-sized box when nothing is covered', () => {
+        const { bounds } = logitsToAlpha(Float32Array.from([-1, -1, 0, 0]), 2, 2);
+
+        expect(bounds).toEqual({ x: 0, y: 0, width: 0, height: 0 });
     });
 });
 
@@ -91,11 +107,65 @@ describe('logitsToMask', () => {
         expect(image.data[7]).toBe(0);
     });
 
-    it('returns the scaled mask with its bounding box', () => {
-        const { mask, bbox } = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
+    /**
+     * Both are deferred: a hover preview draws the silhouette and reads neither, so making the
+     * full-frame readback unconditional charged every speculative detection for output nobody
+     * asked for. The values are the ones an eager read would have produced.
+     */
+    it('reads the mask and its bounding box on demand, not up front', () => {
+        const rasterized = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
 
-        expect(mask.width).toBe(8);
-        expect(bbox).toEqual({ x: 2, y: 1, width: 1, height: 1 });
+        expect(targetCtx.getImageData).not.toHaveBeenCalled();
+
+        expect(rasterized.readMask().width).toBe(8);
+        expect(rasterized.readBbox()).toEqual({ x: 2, y: 1, width: 1, height: 1 });
+    });
+
+    it('reads the pixels once however often they are asked for', () => {
+        const rasterized = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
+
+        rasterized.readMask();
+        rasterized.readBbox();
+        rasterized.readMask();
+
+        expect(targetCtx.getImageData).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * Judged on the low-res mask, so emptiness costs no readback — the one fact `engine.detect`
+     * needs before it can decide whether there is a detection at all.
+     */
+    it('reports an all-negative mask as empty, without reading a pixel back', () => {
+        const { isEmpty } = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
+
+        expect(isEmpty).toBe(true);
+        expect(targetCtx.getImageData).not.toHaveBeenCalled();
+    });
+
+    it('reports a mask with any coverage as non-empty', () => {
+        const logits = new Float32Array(256 * 256);
+        logits[0] = 2;
+
+        expect(logitsToMask(logits, [256, 256], [1024, 512], 8, 4).isEmpty).toBe(false);
+    });
+
+    /** A draw region, so it only has to *contain* the shape — generous is fine, short is not. */
+    it('hands back a paint rect that contains the silhouette', () => {
+        const logits = new Float32Array(256 * 256);
+        logits[0] = 2;
+
+        const { paintRect } = logitsToMask(logits, [256, 256], [1024, 1024], 256, 256);
+
+        expect(paintRect.x).toBe(0);
+        expect(paintRect.y).toBe(0);
+        expect(paintRect.width).toBeGreaterThanOrEqual(1);
+        expect(paintRect.height).toBeGreaterThanOrEqual(1);
+    });
+
+    it('reports an empty paint rect for an empty mask', () => {
+        const { paintRect } = logitsToMask(new Float32Array(256 * 256), [256, 256], [1024, 512], 8, 4);
+
+        expect(paintRect).toEqual({ x: 0, y: 0, width: 0, height: 0 });
     });
 
     /**

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useReducer, useRef, useState } from 'react';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import type { ZoomPanAction } from '../internal/zoomPanReducer';
@@ -16,7 +16,11 @@ const ZOOM_STEP = 0.2;
 const REFIT_THRESHOLD = 5;
 
 export type ZoomPanOptions = {
-    initialScale?: number;
+    /**
+     * Quasi-controlled zoom: the prop wins whenever it changes, the actions win in between.
+     * `undefined` leaves the zoom entirely to the actions, starting from the default.
+     */
+    scale?: number;
     minScale?: number;
     maxScale?: number;
     enableWheelZoom?: boolean;
@@ -61,7 +65,7 @@ export const useZoomPan = (
     options: ZoomPanOptions = {},
 ): [ZoomPanState, ZoomPanActions, ZoomPanAttach] => {
     const {
-        initialScale = MaskEditorDefaults.scale,
+        scale: scaleProp,
         minScale = MaskEditorDefaults.minScale,
         maxScale = MaskEditorDefaults.maxScale,
         enableWheelZoom = MaskEditorDefaults.enableWheelZoom,
@@ -80,7 +84,7 @@ export const useZoomPan = (
     // value keeps `readRect`, `setPan` and `getImageCoordinates` on stable identities.
     const elementRef = useRef<HTMLDivElement | null>(null);
 
-    const [internal, dispatch] = useReducer(zoomPanReducer, initialScale, createZoomPanState);
+    const [internal, dispatch] = useReducer(zoomPanReducer, scaleProp ?? MaskEditorDefaults.scale, createZoomPanState);
 
     // One mirror for the whole state, read by every event handler and observer below so their
     // effects can attach exactly once instead of closing over rendered values.
@@ -122,6 +126,36 @@ export const useZoomPan = (
     useLayoutEffect(() => {
         stateRef.current = internal;
     });
+
+    /**
+     * Reconciles the `scale` prop, the way `usePropOverride` does for `mode` and `cursorSize`:
+     * the prop wins whenever it changes, the actions win in between. During render rather than
+     * in an effect, because as an effect every prop change would first commit the stale zoom and
+     * only then re-render with the new one.
+     *
+     * It bypasses `commit` deliberately, on both counts. It must not notify: `onScaleChange`
+     * reports the editor's own movement, and echoing a prop straight back to the consumer that
+     * set it is how a controlled slider ends up fighting itself. And it must be safe to run
+     * twice — the `'scale'` action is absolute rather than relative, so StrictMode's second
+     * render pass recomputes the same state and stops at the reducer's identity guard.
+     */
+    const [appliedScaleProp, setAppliedScaleProp] = useState(scaleProp);
+    if (appliedScaleProp !== scaleProp) {
+        setAppliedScaleProp(scaleProp);
+
+        if (scaleProp !== undefined) {
+            const action: ZoomPanAction = {
+                type: 'scale',
+                scale: Math.max(minScale, Math.min(maxScale, scaleProp)),
+            };
+            const next = zoomPanReducer(stateRef.current, action);
+
+            if (next !== stateRef.current) {
+                stateRef.current = next;
+                dispatch(action);
+            }
+        }
+    }
 
     // Never rendered, so this is deliberately not state: as state it put every pan listener
     // back on the element on every single mousemove.

@@ -28,6 +28,8 @@ const makeContext = (pixels: number[] = []) => {
             lineTo: vi.fn(),
             fill: vi.fn(),
             stroke: vi.fn(),
+            rect: vi.fn(),
+            clip: vi.fn(),
             drawImage: vi.fn(),
             save: vi.fn(),
             restore: vi.fn(),
@@ -75,7 +77,7 @@ describe('paintMaskStroke', () => {
     describe('starting a stroke', () => {
         it('fills a dab without clearing or stroking, so dabs accumulate', () => {
             const { ctx } = makeContext();
-            paintMaskStroke(ctx, undefined, { x: 3, y: 4 }, 7, '#ff0000');
+            paintMaskStroke(ctx, undefined, [{ x: 3, y: 4 }], 7, '#ff0000');
 
             expect(ctx.clearRect).not.toHaveBeenCalled();
             expect(ctx.stroke).not.toHaveBeenCalled();
@@ -87,7 +89,7 @@ describe('paintMaskStroke', () => {
             const { ctx } = makeContext();
             const seen = modeAtDraw(ctx, 'fill');
 
-            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000', 'erase');
+            paintMaskStroke(ctx, undefined, [{ x: 1, y: 2 }], 3, '#ff0000', 'erase');
 
             expect(seen).toEqual(['destination-out']);
         });
@@ -97,7 +99,7 @@ describe('paintMaskStroke', () => {
             ctx.globalCompositeOperation = 'xor';
             const seen = modeAtDraw(ctx, 'fill');
 
-            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000');
+            paintMaskStroke(ctx, undefined, [{ x: 1, y: 2 }], 3, '#ff0000');
 
             expect(seen).toEqual(['source-over']);
         });
@@ -105,7 +107,7 @@ describe('paintMaskStroke', () => {
         it('restores the composite mode the caller had set', () => {
             const { ctx } = makeContext();
             ctx.globalCompositeOperation = 'multiply';
-            paintMaskStroke(ctx, undefined, { x: 1, y: 2 }, 3, '#ff0000', 'erase');
+            paintMaskStroke(ctx, undefined, [{ x: 1, y: 2 }], 3, '#ff0000', 'erase');
 
             // A leaked `destination-out` would make the next `drawImage` — the initial-mask
             // conversion — erase the canvas instead of filling it.
@@ -116,7 +118,7 @@ describe('paintMaskStroke', () => {
     describe('continuing a stroke', () => {
         it('joins the previous dab to the new one, so fast moves are not a row of dots', () => {
             const { ctx } = makeContext();
-            paintMaskStroke(ctx, { x: 10, y: 20 }, { x: 90, y: 140 }, 6, '#ff0000');
+            paintMaskStroke(ctx, { x: 10, y: 20 }, [{ x: 90, y: 140 }], 6, '#ff0000');
 
             expect(ctx.moveTo).toHaveBeenCalledWith(10, 20);
             expect(ctx.lineTo).toHaveBeenCalledWith(90, 140);
@@ -125,7 +127,7 @@ describe('paintMaskStroke', () => {
 
         it('strokes at the brush diameter with round ends, reproducing the dab at each end', () => {
             const { ctx } = makeContext();
-            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 6, '#00ff00');
+            paintMaskStroke(ctx, { x: 0, y: 0 }, [{ x: 5, y: 5 }], 6, '#00ff00');
 
             expect(ctx.lineWidth).toBe(12);
             expect(ctx.lineCap).toBe('round');
@@ -140,7 +142,7 @@ describe('paintMaskStroke', () => {
          */
         it('draws the segment once, without also filling a dab at the end', () => {
             const { ctx } = makeContext();
-            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 6, '#ff0000');
+            paintMaskStroke(ctx, { x: 0, y: 0 }, [{ x: 5, y: 5 }], 6, '#ff0000');
 
             expect(ctx.fill).not.toHaveBeenCalled();
             expect(ctx.arc).not.toHaveBeenCalled();
@@ -152,7 +154,7 @@ describe('paintMaskStroke', () => {
             ctx.globalCompositeOperation = 'multiply';
             const seen = modeAtDraw(ctx, 'stroke');
 
-            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 3, '#ff0000', 'erase');
+            paintMaskStroke(ctx, { x: 0, y: 0 }, [{ x: 5, y: 5 }], 3, '#ff0000', 'erase');
 
             expect(seen).toEqual(['destination-out']);
             expect(ctx.globalCompositeOperation).toBe('multiply');
@@ -160,10 +162,88 @@ describe('paintMaskStroke', () => {
 
         it('opens a fresh path, so a segment cannot inherit the last one', () => {
             const { ctx } = makeContext();
-            paintMaskStroke(ctx, { x: 0, y: 0 }, { x: 5, y: 5 }, 3, '#ff0000');
+            paintMaskStroke(ctx, { x: 0, y: 0 }, [{ x: 5, y: 5 }], 3, '#ff0000');
 
             expect(ctx.beginPath).toHaveBeenCalledTimes(1);
             expect(ctx.clearRect).not.toHaveBeenCalled();
+        });
+    });
+
+    /**
+     * A pointer move carries every coalesced sample since the last one. Stroking them separately
+     * composites each shared endpoint twice, which under `destination-out` subtracts anti-aliased
+     * alpha twice and leaves a seam down the middle of every erased track — and pays for a
+     * context-state set and a `stroke()` per sample into the bargain.
+     */
+    describe('a run of samples', () => {
+        it('draws the whole batch as one path', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(
+                ctx,
+                { x: 0, y: 0 },
+                [
+                    { x: 1, y: 1 },
+                    { x: 2, y: 4 },
+                    { x: 3, y: 9 },
+                ],
+                3,
+                '#ff0000',
+            );
+
+            expect(ctx.moveTo).toHaveBeenCalledExactlyOnceWith(0, 0);
+            expect((ctx.lineTo as Mock).mock.calls).toEqual([
+                [1, 1],
+                [2, 4],
+                [3, 9],
+            ]);
+            expect(ctx.stroke).toHaveBeenCalledTimes(1);
+        });
+
+        /** No previous dab to join to: the run starts at its own first sample. */
+        it('starts a fresh stroke at the first sample when there is nothing to join to', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(
+                ctx,
+                undefined,
+                [
+                    { x: 4, y: 5 },
+                    { x: 6, y: 7 },
+                ],
+                3,
+                '#ff0000',
+            );
+
+            expect(ctx.moveTo).toHaveBeenCalledExactlyOnceWith(4, 5);
+            expect(ctx.stroke).toHaveBeenCalledTimes(1);
+            expect(ctx.arc).not.toHaveBeenCalled();
+        });
+
+        it('draws nothing for an empty run', () => {
+            const { ctx } = makeContext();
+            paintMaskStroke(ctx, { x: 0, y: 0 }, [], 3, '#ff0000');
+
+            expect(ctx.beginPath).not.toHaveBeenCalled();
+            expect(ctx.stroke).not.toHaveBeenCalled();
+            expect(ctx.fill).not.toHaveBeenCalled();
+        });
+
+        it('sets the composite mode once for the whole run', () => {
+            const { ctx } = makeContext();
+            const seen = modeAtDraw(ctx, 'stroke');
+
+            paintMaskStroke(
+                ctx,
+                { x: 0, y: 0 },
+                [
+                    { x: 1, y: 1 },
+                    { x: 2, y: 2 },
+                ],
+                3,
+                '#ff0000',
+                'erase',
+            );
+
+            expect(seen).toEqual(['destination-out']);
         });
     });
 });
@@ -431,6 +511,7 @@ describe('drawPreviewSilhouette', () => {
         fillOpacity: 0.2,
         outlineOpacity: 0.9,
         outlineWidth: 2,
+        rect: { x: 1, y: 1, width: 4, height: 2 },
     };
 
     it('does nothing when the silhouette has no context', () => {
@@ -504,6 +585,37 @@ describe('drawPreviewSilhouette', () => {
 
         expect(ctx.save).toHaveBeenCalledOnce();
         expect(ctx.restore).toHaveBeenCalledOnce();
+    });
+
+    /**
+     * The ten composites are the cost of a preview, and a silhouette is usually a small part of
+     * the frame. Unclipped, every hover blended the whole canvas ten times over.
+     */
+    it('confines the compositing to the paint rect, grown by the outline', () => {
+        const { ctx, silhouette } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        expect(ctx.rect).toHaveBeenCalledWith(-1, -1, 8, 6);
+        expect(ctx.clip).toHaveBeenCalledOnce();
+    });
+
+    /** The clear stays full-frame, so no caller has to remember where the last preview was. */
+    it('clears everything even though it only paints the rect', () => {
+        const { ctx, silhouette } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette, rect: { x: 2, y: 1, width: 1, height: 1 } });
+
+        expect(ctx.clearRect).toHaveBeenCalledWith(0, 0, 8, 4);
+    });
+
+    it('clears and draws nothing for an empty rect', () => {
+        const { ctx, silhouette } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette, rect: { x: 0, y: 0, width: 0, height: 0 } });
+
+        expect(ctx.clearRect).toHaveBeenCalledWith(0, 0, 8, 4);
+        expect(ctx.drawImage).not.toHaveBeenCalled();
     });
 
     it('tints the silhouette in the live mask colour', () => {

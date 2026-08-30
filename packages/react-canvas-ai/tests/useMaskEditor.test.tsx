@@ -854,7 +854,7 @@ describe('auto-selection', () => {
     // The editor composites from the surface the detection was rasterized on, and hands
     // `DETECTED` itself to consumers — the assertions below pin both halves.
     const SILHOUETTE = document.createElement('canvas');
-    const DETECTION: Detection = { object: DETECTED, silhouette: SILHOUETTE };
+    const DETECTION: Detection = { object: DETECTED, silhouette: SILHOUETTE, paintRect: DETECTED.bbox };
 
     let engine: SamEngine;
 
@@ -1147,7 +1147,11 @@ describe('auto-selection hover preview', () => {
      * "somewhere new". Tests that need the hit test to *hit* build their own mask with
      * `maskCovering` below. Grow this and half this block silently stops detecting.
      */
-    const DETECTION: Detection = { object: DETECTED, silhouette: document.createElement('canvas') };
+    const DETECTION: Detection = {
+        object: DETECTED,
+        silhouette: document.createElement('canvas'),
+        paintRect: DETECTED.bbox,
+    };
 
     /** The rate limit — not a wait before anything happens: the first move fires on the spot. */
     const THROTTLE = 150;
@@ -1362,6 +1366,7 @@ describe('auto-selection hover preview', () => {
         const detection: Detection = {
             object: { ...DETECTED, mask: maskCovering(size, box) },
             silhouette: document.createElement('canvas'),
+            paintRect: box,
         };
         vi.mocked(engine.detect).mockResolvedValue(detection);
 
@@ -1400,6 +1405,69 @@ describe('auto-selection hover preview', () => {
 
         expect(engine.detect).toHaveBeenCalledTimes(2);
         expect(vi.mocked(engine.detect).mock.calls[1][1]).toEqual({ x: 50, y: 30 });
+    });
+
+    /**
+     * A hand resting on a mouse jitters. Every one of those pixels used to arm a run, so a
+     * stationary pointer bought a full decoder pass every interval, forever — each one queued
+     * ahead of the click the user was about to make, and each producing the silhouette already
+     * on screen.
+     */
+    it('does not re-detect a pointer that has not left the previewed point', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+        });
+
+        // Inside the slop: a click here would commit the cached detection unchanged, so asking
+        // again could only reproduce it.
+        move(cursorCanvas(), { clientX: 12, clientY: 11 });
+        await rest();
+
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+    });
+
+    it('re-detects once the pointer travels past the slop', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+        });
+
+        move(cursorCanvas(), { clientX: 40, clientY: 40 });
+        await rest();
+
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * Gated on the cache *existing*, not on travel alone: a point whose detection came back
+     * empty leaves nothing to reuse, so the next move has to be free to ask again.
+     */
+    it('still asks again near a point that produced no detection', async () => {
+        const { cursorCanvas } = await setupAuto();
+        vi.mocked(engine.detect).mockResolvedValue(undefined);
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+        });
+
+        move(cursorCanvas(), { clientX: 12, clientY: 11 });
+        await rest();
+
+        expect(engine.detect).toHaveBeenCalledTimes(2);
     });
 
     it('previews without committing anything to the mask', async () => {

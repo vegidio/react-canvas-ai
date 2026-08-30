@@ -80,3 +80,29 @@ export const clampToSize = (point: Point, size: Point): Point => ({
     x: Math.min(Math.max(point.x, 0), Math.max(size.x - 1, 0)),
     y: Math.min(Math.max(point.y, 0), Math.max(size.y - 1, 0)),
 });
+
+/**
+ * Viewport travel under which a press still counts as a click, and under which a hover
+ * preview still answers for the point that was clicked.
+ *
+ * Viewport pixels, deliberately: image coordinates stretch with the zoom, which would turn a
+ * fixed slop into a zoom-dependent one. One constant rather than one per caller, because past
+ * the distance at which a press stops being a click we can no longer claim the shape on screen
+ * is the one the user was aiming at — the two rules have to move together or a press can count
+ * as a click while the preview it was aimed at is refused.
+ */
+export const CLICK_SLOP_PX: number = 4;
+
+/** Straight-line distance between two points, in whatever space they share. */
+export const distance = (a: Point, b: Point): number => Math.hypot(a.x - b.x, a.y - b.y);
+
+/**
+ * Converts a length in *displayed* pixels to canvas pixels, for decorations that should keep
+ * their thickness on screen as the zoom changes.
+ *
+ * The floor on `effectiveScale` is what survives the window before the first fit, when
+ * `baseScale` is still its placeholder; the result is clamped to a visible minimum because a
+ * sub-pixel ring rounds away to nothing.
+ */
+export const toImageLength = (displayPx: number, effectiveScale: number): number =>
+    Math.max(1, Math.round(displayPx / Math.max(effectiveScale, 0.01)));
