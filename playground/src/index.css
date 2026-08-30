@@ -66,6 +66,15 @@ body {
     opacity: 0.9;
 }
 
+/*
+ * Pushed to the far end of the mode row, opposite the mode-switch button. `margin-left: auto`
+ * rather than `justify-content: space-between` on the row itself: the row also carries the two
+ * indicators, which belong grouped next to the button rather than spread across the width.
+ */
+.controls .preview-toggle {
+    margin-left: auto;
+}
+
 .controls .value {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.875rem;

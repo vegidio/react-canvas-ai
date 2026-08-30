@@ -219,3 +219,165 @@ describe('createSamEngine', () => {
         await expect(engine.prepare(IMAGE)).resolves.toBeUndefined();
     });
 });
+
+describe('createSamEngine concurrency', () => {
+    /**
+     * Lets every pending microtask run. `await Promise.resolve()` advances only one tick, and
+     * `detect` awaits the embedding and the sessions before it ever reaches the decoder.
+     */
+    const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+    /** A promise plus the handles to settle it from the test. */
+    const deferred = <T>() => {
+        let resolve!: (value: T) => void;
+        const promise = new Promise<T>((r) => {
+            resolve = r;
+        });
+        return { promise, resolve };
+    };
+
+    /**
+     * `InferenceSession.run` is only safe to call serially: the JSEP build drives Emscripten's
+     * Asyncify, which cannot be re-entered, and the plain wasm build simply occupies the main
+     * thread. Nothing ran two at once until hover previews started detecting alongside clicks.
+     */
+    it('never has two decoder runs outstanding at the same time', async () => {
+        const first = deferred<unknown>();
+        const second = deferred<unknown>();
+        let outstanding = 0;
+        let peak = 0;
+
+        decoderRun.mockReset().mockImplementation(() => {
+            outstanding += 1;
+            peak = Math.max(peak, outstanding);
+            const pending = decoderRun.mock.calls.length === 1 ? first.promise : second.promise;
+            return pending.then((value) => {
+                outstanding -= 1;
+                return value;
+            });
+        });
+
+        const engine = createSamEngine(CONFIG);
+        await engine.prepare(IMAGE);
+
+        const a = engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+        const b = engine.detect(IMAGE, { x: 2, y: 2 }, TARGET);
+        await flush();
+
+        // The second is still queued behind the first, not running alongside it.
+        expect(decoderRun).toHaveBeenCalledTimes(1);
+
+        first.resolve(makeDecoderOutput([0.1, 0.8, 0.3]));
+        await a;
+        expect(decoderRun).toHaveBeenCalledTimes(2);
+
+        second.resolve(makeDecoderOutput([0.1, 0.8, 0.3]));
+        await b;
+        expect(peak).toBe(1);
+    });
+
+    /** One failed run must not reject everything queued behind it. */
+    it('keeps serving the queue after a run rejects', async () => {
+        decoderRun
+            .mockReset()
+            .mockRejectedValueOnce(new Error('decoder exploded'))
+            .mockResolvedValue(makeDecoderOutput([0.1, 0.8, 0.3]));
+
+        const engine = createSamEngine(CONFIG);
+        await engine.prepare(IMAGE);
+
+        const failed = engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+        const next = engine.detect(IMAGE, { x: 2, y: 2 }, TARGET);
+
+        await expect(failed).rejects.toThrow('decoder exploded');
+        await expect(next).resolves.toBeDefined();
+    });
+
+    /**
+     * Only the settled embedding was checked before, so a detection arriving while the warm-up
+     * was still encoding ran a second full encoder pass over the very same image. A hover
+     * preview lands in that window every time the model is still warming.
+     */
+    it('encodes once when a detection joins an encode already in flight', async () => {
+        const gate = deferred<unknown>();
+        encoderRun.mockReset().mockImplementation(() => gate.promise);
+
+        const engine = createSamEngine(CONFIG);
+        const warm = engine.prepare(IMAGE);
+        const detecting = engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+        await flush();
+
+        gate.resolve({ image_embeddings: { name: 'emb' } });
+        await warm;
+        await detecting;
+
+        expect(encoderRun).toHaveBeenCalledTimes(1);
+    });
+
+    /**
+     * Per caller, not baked into the shared encode: an aborted warm-up must abandon its own
+     * `prepare`, not reject the detection that joined the same encode and still wants the answer.
+     */
+    it('does not let an aborted warm-up reject the detection sharing its encode', async () => {
+        const gate = deferred<unknown>();
+        encoderRun.mockReset().mockImplementation(() => gate.promise);
+
+        const engine = createSamEngine(CONFIG);
+        const controller = new AbortController();
+        const warm = engine.prepare(IMAGE, controller.signal);
+        const detecting = engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+        await flush();
+
+        controller.abort();
+        gate.resolve({ image_embeddings: { name: 'emb' } });
+
+        await expect(warm).rejects.toThrow('aborted');
+        await expect(detecting).resolves.toBeDefined();
+    });
+
+    it('retries the encode after a failed one rather than caching the error', async () => {
+        encoderRun
+            .mockReset()
+            .mockRejectedValueOnce(new Error('encoder exploded'))
+            .mockResolvedValue({ image_embeddings: { name: 'emb' } });
+
+        const engine = createSamEngine(CONFIG);
+        await expect(engine.detect(IMAGE, { x: 1, y: 1 }, TARGET)).rejects.toThrow('encoder exploded');
+        await expect(engine.detect(IMAGE, { x: 1, y: 1 }, TARGET)).resolves.toBeDefined();
+    });
+
+    it('abandons an aborted detection without running the decoder', async () => {
+        const engine = createSamEngine(CONFIG);
+        await engine.prepare(IMAGE);
+        decoderRun.mockClear();
+
+        const controller = new AbortController();
+        controller.abort();
+
+        await expect(engine.detect(IMAGE, { x: 1, y: 1 }, TARGET, { signal: controller.signal })).resolves.toBe(
+            undefined,
+        );
+        expect(decoderRun).not.toHaveBeenCalled();
+    });
+
+    /** Aborted while queued behind another run: the decoder pass is the whole cost to avoid. */
+    it('abandons a detection aborted while it waits for its turn', async () => {
+        const gate = deferred<unknown>();
+        decoderRun.mockReset().mockImplementationOnce(() => gate.promise);
+
+        const engine = createSamEngine(CONFIG);
+        await engine.prepare(IMAGE);
+
+        const blocker = engine.detect(IMAGE, { x: 1, y: 1 }, TARGET);
+        const controller = new AbortController();
+        const queued = engine.detect(IMAGE, { x: 2, y: 2 }, TARGET, { signal: controller.signal });
+        await flush();
+
+        controller.abort();
+        gate.resolve(makeDecoderOutput([0.1, 0.8, 0.3]));
+
+        await blocker;
+        await expect(queued).resolves.toBe(undefined);
+        expect(decoderRun).toHaveBeenCalledTimes(1);
+    });
+});

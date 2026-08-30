@@ -69,6 +69,7 @@ describe('MaskEditorProvider', () => {
                 'isDetecting',
                 'isDrawing',
                 'isPanning',
+                'isPreviewing',
                 'isZoomKeyDown',
                 'key',
                 'maskBlendMode',

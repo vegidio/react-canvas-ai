@@ -5,6 +5,7 @@ import type { DetectedObject } from '../internal/detection';
 import type { Point, Transform } from '../internal/geometry';
 import type { KeyboardScope } from '../internal/keyboard';
 import type { MaskEditorMode } from '../internal/modes';
+import type { Detection } from '../internal/sam/engine';
 import type { ElementHandle } from '../internal/useElementRef';
 import type { AutoSelectOptions, AutoSelectStatus } from './useAutoSelect';
 import { applyDetectedMask, applyMaskImage, paintMaskStroke, recolorMask } from '../internal/canvas';
@@ -14,6 +15,7 @@ import { isFormField, isKeyboardInScope } from '../internal/keyboard';
 import { loadImage } from '../internal/loadImage';
 import { MODE_TOOLS } from '../internal/modes';
 import { toError } from '../internal/toError';
+import { useAutoPreview } from '../internal/useAutoPreview';
 import { useBrushCursor, useBrushSizeWheel, useCursorPainter } from '../internal/useBrush';
 import { useCanvas2dContext } from '../internal/useCanvas2dContext';
 import { useElementRef } from '../internal/useElementRef';
@@ -206,6 +208,14 @@ export type UseMaskEditorReturn = {
     /** True while an auto-selection is in flight, whichever way it was started. */
     isDetecting: boolean;
     /**
+     * True while an uncommitted hover preview is on screen. Always `false` unless
+     * `autoSelect.preview` is set and the editor is in `'auto'` mode.
+     *
+     * Absent from `MaskEditorCanvasRef` on purpose, as `isDetecting` is: the ref triggers no
+     * re-render, so a transient boolean read through it is stale by construction.
+     */
+    isPreviewing: boolean;
+    /**
      * The programmatic twin of a click in auto mode: detects the object at `point` (canvas
      * pixels) and commits it to the mask — undoable, reported through `onMaskChange` — then
      * resolves with the detection, or `undefined` when nothing scored above `minScore`.
@@ -337,6 +347,12 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     // What the active mode does to the pointer, as data. Every site that used to ask
     // `mode === 'auto'` asks the descriptor instead, so a third mode is one table entry.
     const tool = MODE_TOOLS[mode];
+
+    // The descriptor rather than `mode === 'auto'`, for the same reason every other site reads
+    // it: a third segmenting mode gets hover previews without touching this line. `usesBrush`
+    // and `usesAutoSelect` are mutually exclusive in `MODE_TOOLS`, which is what keeps the brush
+    // outline and the preview from ever writing to the cursor layer in the same commit.
+    const isPreviewActive = tool.usesAutoSelect && Boolean(autoSelect?.preview);
 
     // Latched rather than derived from `mode`: leaving auto mode must not tear the warm model
     // down, or every toggle back would re-download and re-encode.
@@ -555,6 +571,38 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
     });
 
     /**
+     * Runs a detection the user never asked for, so it stays out of `status`, out of the busy
+     * cursor, and — the one that matters — out of the one-at-a-time guard that would otherwise
+     * drop the click this preview exists to prepare.
+     */
+    const detectPreview = useCallback(
+        (point: Point, target: Point, signal: AbortSignal) =>
+            detectRef.current(clampToSize(point, target), target, { preview: true, signal }),
+        [],
+    );
+
+    // Called after the brush hooks on purpose: on the paint -> auto commit the cursor painter's
+    // clear must run before the preview's activation, or the two would race for the layer.
+    const { handle: preview, isPreviewing } = useAutoPreview(cursorCanvas, cursorContext, {
+        active: isPreviewActive,
+        size,
+        maskColor,
+        maskOpacity,
+        effectiveScale: zoomPanState.effectiveScale,
+        getImageCoordinates: zoomPanActions.getImageCoordinates,
+        detect: detectPreview,
+        // `'detecting'` is a busy `'ready'`, not a separate point in the lifecycle — the model
+        // is warm either way. Treating them alike is what lets the preview defer to
+        // `isDetectingRef` below and re-arm its trailing run, rather than the busy case falling
+        // out through this check and the re-arm never being reached at all.
+        isReady: autoSelection.status === 'ready' || autoSelection.isDetecting,
+        isDetectingRef,
+        isPanning: zoomPanState.isPanning,
+        isSpaceKeyDown: zoomPanState.isSpaceKeyDown,
+    });
+    const previewRef = useLatest(preview);
+
+    /**
      * Detects at `point` and commits the silhouette through the same path a stroke ends with:
      * composite in the live mask colour, snapshot history, report the mask. That is the whole
      * reason auto-selection lives inside the editor — as an external plugin it painted behind
@@ -563,12 +611,17 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
      * Rejections propagate: the click path reports them to `autoSelect.onError` (nobody else
      * can hear a click fail), while `selectAt` callers get the rejection itself.
      */
-    const runAutoSelect = useCallback(
-        async (point: Point, dabMode: 'paint' | 'erase'): Promise<DetectedObject | undefined> => {
-            const target = sizeRef.current;
-            const detection = await detectRef.current(clampToSize(point, target), target);
-            if (!detection) return undefined;
-
+    /**
+     * The half of {@link runAutoSelect} that touches the mask: composite in the live colour,
+     * snapshot history, report, notify.
+     *
+     * Split out because a hover preview has already paid for its detection, and a click that
+     * reuses it must commit *that* silhouette. A second decoder pass would both cost the user
+     * the wait the preview existed to remove and be free to disagree with the shape they were
+     * looking at when they pressed.
+     */
+    const commitDetection = useCallback(
+        (detection: Detection, dabMode: MaskDotMode): DetectedObject => {
             if (!maskContext) throw new Error('[MaskEditor] The mask canvas is not ready.');
             applyDetectedMask(maskContext, sizeRef.current, detection.silhouette, maskColorRef.current, dabMode);
             historyRef.current.saveToHistory();
@@ -579,6 +632,21 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             return detection.object;
         },
         [maskContext, reportMask, notifyObjectDetected],
+    );
+
+    const runAutoSelect = useCallback(
+        async (point: Point, dabMode: MaskDotMode, cached?: Detection): Promise<DetectedObject | undefined> => {
+            const target = sizeRef.current;
+
+            // `??` short-circuits the await entirely on a cache hit, so every side effect below
+            // lands synchronously inside this call rather than a microtask later — the mask is
+            // already updated by the time the click handler returns.
+            const detection = cached ?? (await detectRef.current(clampToSize(point, target), target));
+            if (!detection) return undefined;
+
+            return commitDetection(detection, dabMode);
+        },
+        [commitDetection],
     );
 
     const selectAt = useCallback(
@@ -636,14 +704,25 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             const travel = Math.hypot(e.nativeEvent.clientX - start.x, e.nativeEvent.clientY - start.y);
             if (travel > AUTO_CLICK_SLOP_PX) return;
 
+            // The shape the user is looking at, if they are looking at one and pressed on it.
+            const cached = previewRef.current.take(start);
+
             // One at a time: a queue of clicks against a busy model would replay stale
-            // intentions seconds later.
-            if (isDetectingRef.current) return;
+            // intentions seconds later. The cached path is exempt, and has to be — it queues no
+            // decoder pass, so there is nothing for a detection already in flight to collide
+            // with, and refusing it would throw away the exact result the user was shown.
+            if (!cached && isDetectingRef.current) return;
 
             const point = getImageCoordinatesRef.current(start.x, start.y);
-            runAutoSelect(point, isEraseGesture(start) ? 'erase' : 'paint').catch((error: unknown) => {
-                notifyAutoSelectError(toError(error));
-            });
+            runAutoSelect(point, isEraseGesture(start) ? 'erase' : 'paint', cached)
+                .catch((error: unknown) => {
+                    notifyAutoSelectError(toError(error));
+                })
+                .finally(() => {
+                    // Not on the way in: the overlay is the only feedback between the press and
+                    // the commit, so it stays up until the mask below actually shows the shape.
+                    previewRef.current.clear();
+                });
         },
         [runAutoSelect, notifyAutoSelectError],
     );
@@ -792,6 +871,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             historyLength: historyManager.history.length,
             isDetecting: autoSelection.isDetecting,
             isDrawing,
+            isPreviewing,
             isPanning: zoomPanState.isPanning,
             isZoomKeyDown: zoomPanState.isZoomKeyDown,
             key,
@@ -824,6 +904,7 @@ export const useMaskEditor = (props: UseMaskEditorProps): UseMaskEditorReturn =>
             handleMouseUp,
             historyManager,
             isDrawing,
+            isPreviewing,
             key,
             maskBlendMode,
             maskColor,

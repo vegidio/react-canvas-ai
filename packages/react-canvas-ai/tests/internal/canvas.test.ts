@@ -5,8 +5,10 @@ import {
     applyMaskImage,
     computeTargetSize,
     drawCursorCircle,
+    drawPreviewSilhouette,
     paintMaskStroke,
     recolorMask,
+    tintSilhouette,
 } from '../../src/internal/canvas';
 import { createCanvas } from '../../src/internal/createCanvas';
 import { toMask } from '../../src/utils';
@@ -27,6 +29,8 @@ const makeContext = (pixels: number[] = []) => {
             fill: vi.fn(),
             stroke: vi.fn(),
             drawImage: vi.fn(),
+            save: vi.fn(),
+            restore: vi.fn(),
             getImageData: vi.fn(() => imageData),
             putImageData: vi.fn(),
             fillStyle: '',
@@ -367,5 +371,146 @@ describe('computeTargetSize', () => {
 
     it('falls back to a visible box when nothing reports a size', () => {
         expect(computeTargetSize(asImage(0, 0, { width: 0, height: 0 }), 1240, 1240)).toEqual({ x: 300, y: 200 });
+    });
+});
+
+describe('tintSilhouette', () => {
+    const makeSilhouette = () => {
+        const ctx = {
+            fillRect: vi.fn(),
+            fillStyle: '',
+            globalCompositeOperation: 'source-over',
+        };
+        return {
+            ctx,
+            silhouette: { width: 2, height: 2, getContext: vi.fn(() => ctx) } as unknown as HTMLCanvasElement,
+        };
+    };
+
+    it('reports failure rather than throwing when the surface has no context', () => {
+        const silhouette = { width: 2, height: 2, getContext: () => undefined } as unknown as HTMLCanvasElement;
+        expect(tintSilhouette(silhouette, '#ff0000')).toBe(false);
+    });
+
+    /**
+     * The whole reason a hover preview may draw a silhouette and the click that commits it may
+     * then tint the same surface again. `source-in` under an opaque fill reads alpha and never
+     * writes it, so the second pass is a no-op and a colour changed between the two still lands.
+     */
+    it('is idempotent, and a later colour still wins', () => {
+        const { ctx, silhouette } = makeSilhouette();
+
+        const opAtFill: string[] = [];
+        ctx.fillRect.mockImplementation(() => opAtFill.push(ctx.globalCompositeOperation));
+
+        expect(tintSilhouette(silhouette, '#ff0000')).toBe(true);
+        expect(tintSilhouette(silhouette, '#ff0000')).toBe(true);
+        expect(ctx.fillStyle).toBe('#ff0000');
+
+        tintSilhouette(silhouette, '#00ff00');
+        expect(ctx.fillStyle).toBe('#00ff00');
+        expect(opAtFill).toEqual(['source-in', 'source-in', 'source-in']);
+    });
+});
+
+describe('drawPreviewSilhouette', () => {
+    const setup = () => {
+        const silhouetteCtx = { fillRect: vi.fn(), fillStyle: '', globalCompositeOperation: 'source-over' };
+        const silhouette = {
+            width: 2,
+            height: 2,
+            getContext: vi.fn(() => silhouetteCtx),
+        } as unknown as HTMLCanvasElement;
+        const { ctx } = makeContext();
+        return { ctx, silhouette, silhouetteCtx };
+    };
+
+    const OPTIONS = {
+        size: { x: 8, y: 4 },
+        color: '#ff0000',
+        fillOpacity: 0.2,
+        outlineOpacity: 0.9,
+        outlineWidth: 2,
+    };
+
+    it('does nothing when the silhouette has no context', () => {
+        const silhouette = { width: 2, height: 2, getContext: () => undefined } as unknown as HTMLCanvasElement;
+        const { ctx } = makeContext();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        expect(ctx.clearRect).not.toHaveBeenCalled();
+        expect(ctx.drawImage).not.toHaveBeenCalled();
+    });
+
+    it('clears the layer before drawing, so previews replace rather than accumulate', () => {
+        const { ctx, silhouette } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        expect(ctx.clearRect).toHaveBeenCalledWith(0, 0, 8, 4);
+    });
+
+    /** Eight offset stamps grow the shape, one punch-out leaves the ring, one lays the fill. */
+    it('builds the ring by compositing: eight stamps, a punch-out, then the fill underneath', () => {
+        const { ctx, silhouette } = setup();
+
+        const calls: { op: string; alpha: number; dx: number; dy: number }[] = [];
+        (ctx.drawImage as Mock).mockImplementation((_img: unknown, dx: number, dy: number) => {
+            calls.push({ op: ctx.globalCompositeOperation, alpha: ctx.globalAlpha, dx, dy });
+        });
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        // Eight to grow the shape, one to punch the original back out, one for the fill.
+        expect(calls).toHaveLength(10);
+
+        const stamps = calls.slice(0, 8);
+        expect(stamps.every((c) => c.op === 'source-over' && c.alpha === 0.9)).toBe(true);
+        // Grown by `outlineWidth` in all eight directions, diagonals included — four would
+        // leave gaps that read as a dotted outline along every slanted edge.
+        expect(stamps.map((c) => `${c.dx},${c.dy}`).sort()).toEqual(
+            ['-2,-2', '-2,0', '-2,2', '0,-2', '0,2', '2,-2', '2,0', '2,2'].sort(),
+        );
+
+        expect(calls[8]).toEqual({ op: 'destination-out', alpha: 1, dx: 0, dy: 0 });
+        expect(calls[9]).toEqual({ op: 'destination-over', alpha: 0.2, dx: 0, dy: 0 });
+    });
+
+    /**
+     * The fill goes *under* the ring. Stacked over it the two alphas would add up and the rim
+     * would read as solid coverage, which is the one thing a preview must never look like.
+     */
+    it('punches the original back out and lays the fill beneath the ring', () => {
+        const { ctx, silhouette } = setup();
+
+        const ops: string[] = [];
+        (ctx.drawImage as Mock).mockImplementation(() => ops.push(ctx.globalCompositeOperation));
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        expect(ops.slice(7)).toEqual(['source-over', 'destination-out', 'destination-over']);
+    });
+
+    /**
+     * Unlike `drawCursorCircle`, which leaves its alpha and composite mode set: after a switch
+     * back to paint mode the brush outline is the next thing drawn on this layer, and it sets
+     * neither back to a known value first.
+     */
+    it('restores the context state it borrowed', () => {
+        const { ctx, silhouette } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette });
+
+        expect(ctx.save).toHaveBeenCalledOnce();
+        expect(ctx.restore).toHaveBeenCalledOnce();
+    });
+
+    it('tints the silhouette in the live mask colour', () => {
+        const { ctx, silhouette, silhouetteCtx } = setup();
+
+        drawPreviewSilhouette(ctx, { ...OPTIONS, silhouette, color: '#00ff00' });
+
+        expect(silhouetteCtx.fillStyle).toBe('#00ff00');
     });
 });

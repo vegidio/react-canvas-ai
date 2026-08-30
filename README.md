@@ -220,13 +220,34 @@ Every auto selection is committed through the editor's normal pipeline: it lands
 | `sam` | `SamConfig` | required | Model configuration — see below. |
 | `preload` | `boolean` | `false` | Warm the sessions and image embedding as soon as the image decodes, instead of on the first switch to auto mode. |
 | `minScore` | `number` | `0` | Detections scoring below this are discarded — the click paints nothing. |
+| `preview` | `boolean` | `false` | Show what a click would select while the pointer hovers — see [Hover preview](#hover-preview). |
 | `onObjectDetected` | `(object: DetectedObject) => void` | — | Called after a detection has been committed to the mask. |
 | `onError` | `(error: Error) => void` | — | Called when the model load or a click-driven detection fails. |
 | `onStatusChange` | `(status: AutoSelectStatus) => void` | — | Lifecycle notifications; hook/provider consumers can read `autoSelectStatus` from the return value instead. |
 
 `SamConfig` takes `encoderUrl` and `decoderUrl` (required), plus optional `wasmPaths` (override for `ort.env.wasm.wasmPaths`), `executionProviders` (default `['wasm']`) and `debug` (log tensor names on load).
 
-The backend walks through this lifecycle: `idle` → `loading` (downloading the ONNX files and running the encoder once on the image — the embedding is then cached) → `ready` → `detecting` (per click) → `ready` (or `error`). The model warms on the first switch to auto mode — or eagerly with `preload` — and **stays warm** when the user toggles back to paint. A new `src` automatically re-encodes; there is nothing to invalidate by hand.
+The backend walks through this lifecycle: `idle` → `loading` (downloading the ONNX files and running the encoder once on the image — the embedding is then cached) → `ready` → `detecting` (per click; hover previews are deliberately excluded) → `ready` (or `error`). The model warms on the first switch to auto mode — or eagerly with `preload` — and **stays warm** when the user toggles back to paint. A new `src` automatically re-encodes; there is nothing to invalidate by hand.
+
+### Hover preview
+
+With `preview: true`, moving the pointer over the image in auto mode runs the same detection and draws the object underneath as an **uncommitted overlay** — a faint fill ringed by a solid outline — so the extent of a selection is visible *before* the click that makes it. Nothing touches the mask until an actual click; moving elsewhere previews a different object.
+
+```tsx
+<MaskEditor
+  src={src}
+  autoSelect={{ sam: samConfig, preview: true }}
+  onDrawingChange={setDrawing}
+/>
+```
+
+Off by default, because every hover that settles costs a decoder pass. Worth knowing:
+
+- **It appears as soon as the pointer reaches something it does not already cover** — the detection starts on that move, not on a timer — then follow-ups are rate-limited to one per 150 ms, with a final run for wherever the pointer comes to rest. A superseded run is aborted before its decoder pass, so a fast sweep costs far less than one detection per object crossed. What is already drawn stays up while the next one is detected, rather than blinking out on every twitch.
+- **Every position is detected, including one inside the preview already on screen.** SAM answers a *point*, not an object, so a point inside a silhouette is a different question with a different answer — hovering a person and then the bag they are holding previews each in turn. Objects nested inside a larger selection stay reachable.
+- **Clicking what you previewed commits exactly that**, with no second decoder pass — the click is instant, and the model cannot come back with a different answer than the one on screen. Click more than a few pixels away and it detects normally.
+- **A preview is invisible to the rest of the API.** It never moves `autoSelectStatus` or `isDetecting`, never shows the busy cursor, never reaches `onObjectDetected` or `onError`, and cannot delay or drop a real click. Read `isPreviewing` from the hook return or the context if you want to reflect it.
+- It draws on the cursor layer, which auto mode otherwise leaves idle, so there is no extra canvas to mount — headless consumers get it for free as long as they render `cursorCanvasRef`.
 
 ### `selectAt` — programmatic selection
 
@@ -321,6 +342,7 @@ const CustomMaskEditor = () => {
     mode,
     setMode,
     isDetecting,
+    isPreviewing,
   } = useMaskEditor({
     src: 'https://example.com/photo.jpg',
     maskColor: '#00ff00',

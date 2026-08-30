@@ -181,3 +181,98 @@ describe('useAutoSelect', () => {
         expect(engine.dispose).toHaveBeenCalled();
     });
 });
+
+describe('useAutoSelect preview detections', () => {
+    /**
+     * A hover is not an intention. If a preview fed the pending count it would flip `status` to
+     * `'detecting'` — swapping the container cursor to `progress` on every hover — and, far
+     * worse, trip the editor's one-at-a-time guard so that the click the preview was preparing
+     * the user to make got dropped.
+     */
+    it('never moves status or isDetecting', async () => {
+        const statuses: string[] = [];
+        const config = { ...CONFIG, onStatusChange: (status: string) => statuses.push(status) };
+        const { result } = renderHook(() => useAutoSelect({ config, image: IMAGE, shouldWarm: true }));
+
+        await waitFor(() => expect(result.current.status).toBe('ready'));
+        statuses.length = 0;
+
+        let detecting: boolean | undefined;
+        vi.mocked(engine.detect).mockImplementation(async () => {
+            detecting = result.current.isDetecting;
+            return DETECTION;
+        });
+
+        await act(async () => {
+            await result.current.detect({ x: 1, y: 1 }, { x: 20, y: 10 }, { preview: true });
+        });
+
+        expect(detecting).toBe(false);
+        expect(result.current.isDetecting).toBe(false);
+        expect(result.current.status).toBe('ready');
+        expect(statuses).toEqual([]);
+    });
+
+    /**
+     * Parking the editor in `'error'` because a throwaway decode nobody asked for lost a race
+     * would report a broken model that the very next click segments with perfectly well.
+     */
+    it('leaves the standing phase alone when a preview fails', async () => {
+        const onError = vi.fn();
+        const { result } = renderHook(() =>
+            useAutoSelect({ config: { ...CONFIG, onError }, image: IMAGE, shouldWarm: true }),
+        );
+
+        await waitFor(() => expect(result.current.status).toBe('ready'));
+        vi.mocked(engine.detect).mockRejectedValueOnce(new Error('decoder exploded'));
+
+        await act(async () => {
+            await expect(result.current.detect({ x: 1, y: 1 }, { x: 20, y: 10 }, { preview: true })).rejects.toThrow(
+                'decoder exploded',
+            );
+        });
+
+        expect(result.current.status).toBe('ready');
+        expect(onError).not.toHaveBeenCalled();
+    });
+
+    it('still reports a committed detection failing, so a real click is not silent', async () => {
+        const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
+
+        await waitFor(() => expect(result.current.status).toBe('ready'));
+        vi.mocked(engine.detect).mockRejectedValueOnce(new Error('decoder exploded'));
+
+        await act(async () => {
+            await expect(result.current.detect({ x: 1, y: 1 }, { x: 20, y: 10 })).rejects.toThrow('decoder exploded');
+        });
+
+        expect(result.current.status).toBe('error');
+    });
+
+    it('passes the abort signal through to the engine', async () => {
+        const { result } = renderHook(() => useAutoSelect({ config: CONFIG, image: IMAGE, shouldWarm: true }));
+        await waitFor(() => expect(result.current.status).toBe('ready'));
+
+        const controller = new AbortController();
+        await act(async () => {
+            await result.current.detect(
+                { x: 1, y: 1 },
+                { x: 20, y: 10 },
+                {
+                    preview: true,
+                    signal: controller.signal,
+                },
+            );
+        });
+
+        expect(engine.detect).toHaveBeenLastCalledWith(
+            IMAGE,
+            { x: 1, y: 1 },
+            { x: 20, y: 10 },
+            {
+                minScore: undefined,
+                signal: controller.signal,
+            },
+        );
+    });
+});

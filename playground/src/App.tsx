@@ -13,6 +13,28 @@ const App = () => {
     const canvas = useRef<MaskEditorCanvasRef>(null);
     const [mode, setMode] = useState<MaskEditorMode>('paint');
     const [status, setStatus] = useState<AutoSelectStatus>('idle');
+    // Held here rather than inside the auto-mode branch below, so switching to paint and back
+    // does not silently reset a choice the user made.
+    const [preview, setPreview] = useState(true);
+
+    /**
+     * How long the last detection took. Times a *click*, not a hover: previews are deliberately
+     * excluded from `onStatusChange`, but they pay the same decoder pass on the same serial
+     * queue — which is what the hover latency is made of now that the trigger is immediate.
+     */
+    const detectStartedAt = useRef<number | undefined>(undefined);
+    const [detectMs, setDetectMs] = useState<number>();
+
+    const handleStatusChange = (next: AutoSelectStatus) => {
+        setStatus(next);
+
+        if (next === 'detecting') {
+            detectStartedAt.current = performance.now();
+        } else if (detectStartedAt.current !== undefined) {
+            setDetectMs(Math.round(performance.now() - detectStartedAt.current));
+            detectStartedAt.current = undefined;
+        }
+    };
     const [errorMessage, setErrorMessage] = useState<string>();
     const [mask, setMask] = useState('');
     const [cursorSize, setCursorSize] = useState(20);
@@ -57,7 +79,9 @@ const App = () => {
                 return 'Detecting object…';
             default:
                 return mode === 'auto'
-                    ? 'Auto-select mode: click an object to mask it, shift-click to remove one.'
+                    ? preview
+                        ? 'Auto-select mode: hover an object to preview what a click would select, click to mask it, shift-click to remove one.'
+                        : 'Auto-select mode: click an object to mask it, shift-click to remove one.'
                     : 'Paint mode: drag to paint, shift-drag or right-drag to erase, ctrl+wheel to zoom, space-drag to pan.';
         }
     })();
@@ -82,7 +106,8 @@ const App = () => {
                         onModeChange={setMode}
                         autoSelect={{
                             sam: samConfig,
-                            onStatusChange: setStatus,
+                            preview,
+                            onStatusChange: handleStatusChange,
                             onError: (error) => setErrorMessage(error.message),
                         }}
                         maskColor={color}
@@ -113,6 +138,17 @@ const App = () => {
                 <span className='status-indicator' data-status={status}>
                     Status: <strong>{status}</strong>
                 </span>
+                {detectMs !== undefined && (
+                    <span className='status-indicator'>
+                        Last detection: <strong>{detectMs} ms</strong>
+                    </span>
+                )}
+                {mode === 'auto' && (
+                    <label className='preview-toggle'>
+                        <input type='checkbox' checked={preview} onChange={(e) => setPreview(e.target.checked)} />
+                        Preview mode
+                    </label>
+                )}
                 <p className='status' role='status'>
                     {statusLine}
                 </p>

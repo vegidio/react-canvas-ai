@@ -10,6 +10,15 @@ import { loadSessions, type SamSessions } from './session';
 export type DetectOptions = {
     /** Detections scoring below this are rejected and `detect` resolves `undefined`. */
     minScore?: number;
+    /**
+     * Abandons the detection instead of running the decoder, for callers whose result has
+     * already been superseded — the hover preview, whose pointer has moved on. Checked after
+     * the run queue below hands over its slot as well as before, because that wait is where a
+     * speculative detection spends most of its life and the decoder pass is the whole cost.
+     *
+     * It cannot cancel a run that has started: ONNX Runtime offers no such thing.
+     */
+    signal?: AbortSignal;
 };
 
 /**
@@ -62,11 +71,39 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
     // `invalidateEmbedding()` for the cases where the identity lied.
     let embeddingKey: HTMLImageElement | undefined;
 
+    // The encode that is currently running, alongside the one that has finished. Only checking
+    // the settled `embedding` meant two callers arriving together — the warm-up and a detection
+    // that did not wait for it — each ran a full encoder pass over the same image. Nothing made
+    // that likely until hover previews started detecting without being asked to.
+    let embeddingPromise: Promise<Embedding> | undefined;
+    let embeddingPromiseKey: HTMLImageElement | undefined;
+
     // The download's own lifetime, which is the load's — not the image's. Threading a caller's
     // per-image signal down to `fetch` instead aborted a 14 MB download every time `src`
     // changed, before Cache Storage had been written, so the next warm-up started from zero.
     // Recreated per load, so `dispose` cancelling one does not poison the next.
     let loadAbort: AbortController | undefined;
+
+    // One inference at a time, per engine. `InferenceSession.run` is only safe to call serially:
+    // the JSEP build drives Emscripten's Asyncify, which cannot be re-entered, and the plain
+    // wasm build simply occupies the main thread for the duration, so there was never any
+    // concurrency to win. Nothing needed this before hover previews, because nothing ran a
+    // decode while another was still going.
+    let inferenceQueue: Promise<unknown> = Promise.resolve();
+
+    const runExclusive = <T>(task: () => Promise<T>): Promise<T> => {
+        const result = inferenceQueue.then(task);
+
+        // The queue advances through a continuation that swallows, so one failed run cannot
+        // reject every run queued behind it. The caller still sees its own rejection, through
+        // `result` — which is a different promise from the one the queue holds.
+        inferenceQueue = result.then(
+            () => {},
+            () => {},
+        );
+
+        return result;
+    };
 
     const getSessions = (): Promise<SamSessions> => {
         // A failed load is not cached: the next call retries rather than replaying the error
@@ -82,9 +119,7 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
         return sessionsPromise;
     };
 
-    const ensureEmbedding = async (image: HTMLImageElement, signal?: AbortSignal): Promise<Embedding> => {
-        if (embedding && embeddingKey === image) return embedding;
-
+    const encodeImage = async (image: HTMLImageElement): Promise<Embedding> => {
         // Started, not awaited: the download is network-bound and the preprocessing is a
         // straight CPU pass over the pixels, so the first warm-up pays their max rather than
         // their sum. The no-op catch keeps a throw from `imageToEncoderInput` — which would
@@ -94,11 +129,10 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
 
         const pre = imageToEncoderInput(image);
         const sessions = await pending;
-        if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
 
         const pixelValues = new sessions.ort.Tensor('float32', pre.data, [...pre.dims]);
         const inputName = sessions.encoder.inputNames[0] ?? 'pixel_values';
-        const encoderOutput = await sessions.encoder.run({ [inputName]: pixelValues });
+        const encoderOutput = await runExclusive(() => sessions.encoder.run({ [inputName]: pixelValues }));
 
         const image_embeddings = findTensor(encoderOutput, ['image_embeddings', 'last_hidden_state', 'image_features']);
         if (!image_embeddings) {
@@ -114,7 +148,38 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
 
         embedding = next;
         embeddingKey = image;
-        return embedding;
+        return next;
+    };
+
+    /**
+     * The image embedding, encoding it at most once no matter how many callers ask at once.
+     *
+     * `signal` is checked per caller rather than threaded into the shared encode, which is the
+     * whole point of sharing it: an aborted warm-up must abandon its own `prepare`, not reject
+     * the detection that joined the same encode and still wants the answer. The trade is that
+     * an abort arriving mid-encode no longer skips the encoder pass — a run ONNX Runtime gives
+     * us no way to cancel anyway, and whose result is cached for the next caller regardless.
+     */
+    const ensureEmbedding = async (image: HTMLImageElement, signal?: AbortSignal): Promise<Embedding> => {
+        if (embedding && embeddingKey === image) return embedding;
+        if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
+
+        if (!embeddingPromise || embeddingPromiseKey !== image) {
+            embeddingPromiseKey = image;
+            // A failed encode is not cached, for the reason `getSessions` does not cache a
+            // failed load: the next click retries instead of replaying the error forever.
+            embeddingPromise = encodeImage(image).catch((error: unknown) => {
+                if (embeddingPromiseKey === image) {
+                    embeddingPromise = undefined;
+                    embeddingPromiseKey = undefined;
+                }
+                throw error;
+            });
+        }
+
+        const result = await embeddingPromise;
+        if (signal?.aborted) throw new Error('SAM image encoding was aborted.');
+        return result;
     };
 
     return {
@@ -122,7 +187,10 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
             await ensureEmbedding(image, signal);
         },
         detect: async (image, point, target, options) => {
-            const emb = await ensureEmbedding(image);
+            const signal = options?.signal;
+            if (signal?.aborted) return undefined;
+
+            const emb = await ensureEmbedding(image, signal);
             const sessions = await getSessions();
             const { ort } = sessions;
 
@@ -147,7 +215,16 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
                 if (match) filtered[name] = match;
             }
 
-            const decoderOutput = await sessions.decoder.run(filtered);
+            // Checked inside the queued task, not before it. A speculative detection spends
+            // almost all of its life waiting for whatever run is already going, so testing the
+            // signal on the way into the queue tests it at the one moment it cannot yet have
+            // been set — by the time the slot is free the pointer has usually moved on, and the
+            // decoder pass is the entire cost worth avoiding.
+            const decoderOutput = await runExclusive(async () => {
+                if (signal?.aborted) return undefined;
+                return sessions.decoder.run(filtered);
+            });
+            if (!decoderOutput) return undefined;
             const iouTensor = findTensor(decoderOutput, ['iou_scores', 'iou_predictions']);
             const masksTensor = findTensor(decoderOutput, ['pred_masks', 'masks', 'low_res_masks']);
 
@@ -184,6 +261,12 @@ export const createSamEngine = (config: SamConfig): SamEngine => {
         dispose: () => {
             embedding = undefined;
             embeddingKey = undefined;
+
+            // The in-flight encode goes too, or a `detect` after `dispose` would await a
+            // promise whose sessions have since been released. Dropping the reference is all
+            // that is needed: the run itself is uncancellable and its result is now unreachable.
+            embeddingPromise = undefined;
+            embeddingPromiseKey = undefined;
 
             // Dropping the reference is not enough: an `InferenceSession` owns WASM-heap
             // allocations — the deserialized graph and the runtime's arena — that JS garbage

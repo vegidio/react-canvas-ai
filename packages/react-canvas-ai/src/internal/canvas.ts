@@ -153,6 +153,27 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
 };
 
 /**
+ * Replaces a silhouette's RGB with `color`, leaving its coverage untouched. Returns whether
+ * the surface could be tinted at all.
+ *
+ * Running this twice is a no-op the second time, which is what lets a hover preview tint a
+ * silhouette to draw it and the click that commits that same silhouette tint it again. Under
+ * an opaque full-rect fill, `source-in` is `Ao = As x Ad` with `As = 1`: alpha is read and
+ * never written, and the colour comes from the fill rather than from whatever was there. So
+ * there is no accumulation, no rounding drift across repeats, and a `maskColor` changed
+ * between the two passes still lands exactly.
+ */
+export const tintSilhouette = (silhouette: ScratchCanvas, color: string): boolean => {
+    const ctx = silhouette.getContext('2d');
+    if (!ctx) return false;
+
+    ctx.globalCompositeOperation = 'source-in';
+    ctx.fillStyle = color;
+    ctx.fillRect(0, 0, silhouette.width, silhouette.height);
+    return true;
+};
+
+/**
  * Composites a detected object's silhouette onto the mask layer, upholding the same coverage
  * invariant the brush does: painting lands `color` at the silhouette's alpha, erasing subtracts
  * that alpha. The silhouette's own RGB is ignored — `source-in` replaces it with the editor's
@@ -160,11 +181,11 @@ export const applyMaskImage = (ctx: CanvasRenderingContext2D, size: Point, img: 
  * strokes. The plugin this replaces took a separate style object instead, which meant every
  * consumer had to pass `maskColor` twice and keep the two in agreement.
  *
- * Takes the surface the detection was rasterized on and tints it in place. It arrives fresh
- * from one detection and is drawn once, and the `ImageData` handed to consumers was read off
- * it beforehand, so nothing observes the tint. Copying those pixels onto a scratch canvas
- * first — which is what this did — was a full-frame `putImageData` and a second allocation
- * per click, to rebuild a canvas the pipeline had already produced.
+ * Takes the surface the detection was rasterized on and tints it in place, through
+ * {@link tintSilhouette}. The `ImageData` handed to consumers was read off it beforehand, so
+ * nothing observes the tint. Copying those pixels onto a scratch canvas first — which is what
+ * this did — was a full-frame `putImageData` and a second allocation per click, to rebuild a
+ * canvas the pipeline had already produced.
  *
  * The composite operation is saved and restored for the same reason {@link paintMaskStroke} does
  * it: the mask context is shared, and leaving `destination-out` in force would turn the next
@@ -177,17 +198,81 @@ export const applyDetectedMask = (
     color: string,
     mode: MaskDotMode = 'paint',
 ): void => {
-    const silhouetteCtx = silhouette.getContext('2d');
-    if (!silhouetteCtx) return;
-
-    silhouetteCtx.globalCompositeOperation = 'source-in';
-    silhouetteCtx.fillStyle = color;
-    silhouetteCtx.fillRect(0, 0, silhouette.width, silhouette.height);
+    if (!tintSilhouette(silhouette, color)) return;
 
     const previous = ctx.globalCompositeOperation;
     ctx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
     ctx.drawImage(silhouette, 0, 0, size.x, size.y);
     ctx.globalCompositeOperation = previous;
+};
+
+/**
+ * The eight neighbours of a pixel. Four would leave gaps at the diagonals of a grown
+ * silhouette, which read as a dotted outline along every slanted edge.
+ */
+const OUTLINE_OFFSETS: readonly (readonly [number, number])[] = [
+    [-1, -1],
+    [0, -1],
+    [1, -1],
+    [-1, 0],
+    [1, 0],
+    [-1, 1],
+    [0, 1],
+    [1, 1],
+];
+
+export type PreviewSilhouetteOptions = {
+    size: Point;
+    silhouette: ScratchCanvas;
+    color: string;
+    /** Below the mask layer's own opacity, so a preview can never be read as a commit. */
+    fillOpacity: number;
+    outlineOpacity: number;
+    /** How far the outline is grown, in canvas pixels. */
+    outlineWidth: number;
+};
+
+/**
+ * Paints an uncommitted detection onto the cursor layer: the silhouette tinted in the mask
+ * colour at a reduced alpha, ringed by a solid outline so the *extent* of the selection stays
+ * legible even where a faint fill washes out over a busy photo.
+ *
+ * The ring is built by compositing rather than traced. The silhouette is stamped `outlineWidth`
+ * px out in eight directions to grow it, then the un-offset silhouette is punched back out with
+ * `destination-out`, leaving the difference — nine `drawImage` calls the compositor does on its
+ * own, plus a tenth for the fill, against a JS pass over every pixel of a full-frame alpha
+ * buffer for a marching-squares trace, which would additionally need a vector representation
+ * before it could be stroked at all. `logitsToMask` hands over an alpha-only surface already at `size`, so there is nothing
+ * to rescale and no colour channel to work around.
+ *
+ * The fill goes on last, *under* the ring. Stacked over it, the two alphas would add up and
+ * make the rim read as solid coverage — the one thing a preview must never look like.
+ */
+export const drawPreviewSilhouette = (ctx: CanvasRenderingContext2D, options: PreviewSilhouetteOptions): void => {
+    const { size, silhouette, color, fillOpacity, outlineOpacity, outlineWidth } = options;
+    if (!tintSilhouette(silhouette, color)) return;
+
+    ctx.clearRect(0, 0, size.x, size.y);
+
+    // Saved and restored, unlike `drawCursorCircle`: on a switch back to paint mode the brush
+    // outline is the next thing drawn here, and it sets neither `globalCompositeOperation` nor
+    // its own alpha back to a known value first.
+    ctx.save();
+
+    ctx.globalAlpha = outlineOpacity;
+    for (const [dx, dy] of OUTLINE_OFFSETS) {
+        ctx.drawImage(silhouette, dx * outlineWidth, dy * outlineWidth, size.x, size.y);
+    }
+
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.globalAlpha = 1;
+    ctx.drawImage(silhouette, 0, 0, size.x, size.y);
+
+    ctx.globalCompositeOperation = 'destination-over';
+    ctx.globalAlpha = fillOpacity;
+    ctx.drawImage(silhouette, 0, 0, size.x, size.y);
+
+    ctx.restore();
 };
 
 /**

@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { act, render } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AutoSelectOptions, DetectedObject } from '../src/hooks/useAutoSelect';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AutoSelectOptions, BoundingBox, DetectedObject } from '../src/hooks/useAutoSelect';
 import type { MaskEditorMode, UseMaskEditorProps } from '../src/hooks/useMaskEditor';
+import type { Point } from '../src/internal/geometry';
 import type { Detection, SamEngine } from '../src/internal/sam/engine';
 import { useMaskEditor } from '../src/hooks/useMaskEditor';
 import { applyDetectedMask } from '../src/internal/canvas';
@@ -1128,5 +1129,615 @@ describe('auto-selection', () => {
 
         act(() => state().undo());
         expect(state().historyIndex).toBe(-1);
+    });
+});
+
+describe('auto-selection hover preview', () => {
+    const AUTO: AutoSelectOptions = { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' }, preview: true };
+
+    const DETECTED: DetectedObject = {
+        id: 'sam-1',
+        score: 0.9,
+        bbox: { x: 0, y: 0, width: 2, height: 2 },
+        mask: new ImageData(2, 2),
+    };
+    /**
+     * The 2x2 `mask` is load-bearing, not lazy fixture-writing: the editor canvas is far larger,
+     * so `maskCoversPoint` misses on bounds for every pointer position and each move counts as
+     * "somewhere new". Tests that need the hit test to *hit* build their own mask with
+     * `maskCovering` below. Grow this and half this block silently stops detecting.
+     */
+    const DETECTION: Detection = { object: DETECTED, silhouette: document.createElement('canvas') };
+
+    /** The rate limit — not a wait before anything happens: the first move fires on the spot. */
+    const THROTTLE = 150;
+
+    let engine: SamEngine;
+
+    beforeEach(() => {
+        engine = {
+            prepare: vi.fn(async () => {}),
+            detect: vi.fn(async () => DETECTION),
+            dispose: vi.fn(),
+        };
+        vi.mocked(createSamEngine).mockReset().mockReturnValue(engine);
+        vi.mocked(applyDetectedMask).mockReset();
+    });
+
+    /** Renders in auto mode with the model already warm, which is when previews are allowed. */
+    const setupAuto = async (props: Partial<UseMaskEditorProps> = {}) => {
+        const utils = setup({ autoSelect: AUTO, mode: 'auto', ...props });
+        await settle();
+        vi.mocked(engine.detect).mockClear();
+        return utils;
+    };
+
+    /** Clears the rate limit, runs any deferred detection, and lets it resolve. */
+    const rest = async () => {
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+    };
+
+    /** Lets a detection that has already started resolve, without moving the clock. */
+    const landed = async () => {
+        await act(async () => {
+            await Promise.resolve();
+        });
+        await act(async () => {
+            await Promise.resolve();
+        });
+    };
+
+    const mouse = (el: HTMLElement, type: 'mousedown' | 'mouseup', init: MouseEventInit = {}) =>
+        act(() => {
+            el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, ...init }));
+        });
+
+    const click = async (el: HTMLElement, init: MouseEventInit = {}) => {
+        mouse(el, 'mousedown', init);
+        mouse(el, 'mouseup', init);
+        await settle();
+    };
+
+    /**
+     * The whole point of the leading edge. Under the trailing debounce this replaced, nothing
+     * happened for half a second and the preview only appeared once the hand went still.
+     */
+    it('previews the first move immediately, with no timer to wait for', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+
+        // Nothing is waiting on a clock: the run started on the event itself. (`engine.detect`
+        // is still one microtask away — `useAutoSelect.detect` awaits `ensureEngine` first —
+        // which is why the timer count, not the call count, is what pins the leading edge.)
+        expect(vi.getTimerCount()).toBe(0);
+
+        // Resolves on microtasks alone. No `advanceTimersByTime` anywhere in this test.
+        await landed();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(state().isPreviewing).toBe(true);
+    });
+
+    /** One leading run for the first move, one trailing run for wherever the pointer stops. */
+    it('coalesces a fast sweep into one leading run and one trailing run', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        for (const clientX of [10, 20, 30, 40]) {
+            move(cursorCanvas(), { clientX, clientY: 10 });
+            await act(async () => {
+                vi.advanceTimersByTime(20);
+            });
+        }
+
+        // The first move fired; the other three were inside the rate-limit window.
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await rest();
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+
+        // The trailing run took the *last* position, not the one that armed it: a click there
+        // commits from cache, with no third detection.
+        await click(cursorCanvas(), { clientX: 40, clientY: 10 });
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+        expect(applyDetectedMask).toHaveBeenCalledTimes(1);
+    });
+
+    /** Too soon for the rate limit is a reason to defer, never a reason to lose the run. */
+    it('defers a miss inside the rate-limit window instead of dropping it', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        // Well inside the window, and somewhere the 2x2 fixture mask does not cover.
+        move(cursorCanvas(), { clientX: 400, clientY: 400 });
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await rest();
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * `engine.detect` re-checks the signal after the serial inference queue hands over its slot,
+     * so an aborted run skips its decoder pass entirely — but only if somebody aborts it.
+     * Overwriting the controller instead left every superseded preview paying full price for a
+     * result the staleness check then threw away, which firing on the leading edge turns from
+     * rare into routine.
+     */
+    it('aborts a superseded run so it never reaches the decoder', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+        });
+
+        move(cursorCanvas(), { clientX: 400, clientY: 400 });
+        await landed();
+
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+
+        const first = vi.mocked(engine.detect).mock.calls[0][3];
+        expect(first?.signal?.aborted).toBe(true);
+    });
+
+    /**
+     * jsdom reports no layout, so `calculateBaseScale` runs `parseFloat('')` on the container's
+     * padding and the whole client -> image mapping comes back NaN — which `maskCoversPoint`
+     * correctly treats as a miss, and which is why every test above can ignore coordinates.
+     * Tests about *where* the pointer is have to supply a geometry.
+     *
+     * With the rect matching the content size and no padding, `baseScale` is 1 and an image
+     * coordinate equals its client coordinate, so the numbers in these tests read literally.
+     */
+    const stubLayout = (size: Point) => {
+        // On the prototype and *before* the render, not on the node afterwards: `useZoomPan`
+        // caches the container rect and only drops it on scroll or resize, so a stub installed
+        // after mount leaves jsdom's all-zero rect cached. That offsets the mapping by half the
+        // canvas — near enough to look right at the origin, wrong by the far edge, which is
+        // exactly the kind of half-correct fixture that makes a hit test look flaky.
+        const rect = { left: 0, top: 0, width: size.x, height: size.y, right: size.x, bottom: size.y } as DOMRect;
+        const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'getBoundingClientRect');
+
+        Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', {
+            configurable: true,
+            value: () => rect,
+        });
+
+        // `calculateBaseScale` reads these too, and a NaN padding there makes every coordinate
+        // NaN regardless of the rect.
+        for (const [key, value] of [
+            ['clientWidth', size.x],
+            ['clientHeight', size.y],
+        ] as const) {
+            Object.defineProperty(HTMLElement.prototype, key, { configurable: true, value });
+        }
+
+        return () => {
+            if (original) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', original);
+        };
+    };
+
+    /** An alpha-only mask covering `box`, shaped like what `logitsToMask` hands back. */
+    const maskCovering = (size: Point, box: BoundingBox): ImageData => {
+        const mask = new ImageData(size.x, size.y);
+
+        for (let y = box.y; y < box.y + box.height; y += 1) {
+            for (let x = box.x; x < box.x + box.width; x += 1) {
+                mask.data[(y * size.x + x) * 4 + 3] = 255;
+            }
+        }
+
+        return mask;
+    };
+
+    /**
+     * A small canvas with a real geometry, and a detection whose mask covers `box`. The layout
+     * is stubbed before `settle()` on purpose: `useZoomPan` measures the container when the
+     * content size changes, which is when the image finishes loading.
+     */
+    let restoreLayout: (() => void) | undefined;
+    afterEach(() => {
+        restoreLayout?.();
+        restoreLayout = undefined;
+    });
+
+    const setupWithLayout = async (box: BoundingBox) => {
+        const size = { x: 100, y: 60 };
+
+        // `{ width, height }`, not the `{ x, y }` of a `Point`: given the wrong shape the mock
+        // reports no dimensions and `computeTargetSize` quietly falls back to 300x200, which
+        // rescales every coordinate and makes the hit test look broken.
+        remockImage({ width: size.x, height: size.y });
+
+        const detection: Detection = {
+            object: { ...DETECTED, mask: maskCovering(size, box) },
+            silhouette: document.createElement('canvas'),
+        };
+        vi.mocked(engine.detect).mockResolvedValue(detection);
+
+        restoreLayout = stubLayout(size);
+
+        const utils = setup({ autoSelect: AUTO, mode: 'auto' });
+        utils.state().containerRef.current?.style.setProperty('padding', '0px');
+
+        await settle();
+        vi.mocked(engine.detect).mockClear();
+        return utils;
+    };
+
+    /**
+     * The regression that made this worth a layout stub. A preview used to be treated as the
+     * answer for everything it covered, so once a big silhouette was on screen every smaller
+     * object inside it became unreachable — hover the person, try to preview the bag they are
+     * holding, and nothing happened at all. SAM answers a *point*, so a point inside a
+     * silhouette is a different question with a legitimately different answer.
+     */
+    it('re-detects a point that the preview already on screen covers', async () => {
+        const { cursorCanvas, state } = await setupWithLayout({ x: 0, y: 0, width: 100, height: 60 });
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(state().isPreviewing).toBe(true);
+
+        await act(async () => {
+            vi.advanceTimersByTime(THROTTLE);
+        });
+
+        // Deep inside the silhouette that is already drawn, and it still asks.
+        move(cursorCanvas(), { clientX: 50, clientY: 30 });
+        await landed();
+
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+        expect(vi.mocked(engine.detect).mock.calls[1][1]).toEqual({ x: 50, y: 30 });
+    });
+
+    it('previews without committing anything to the mask', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(applyDetectedMask).not.toHaveBeenCalled();
+        expect(state().isPreviewing).toBe(true);
+    });
+
+    /**
+     * A hover is not an intention: it must not swap the container cursor to `progress`, and it
+     * must not trip the one-at-a-time guard that would drop the click it was preparing.
+     */
+    it('keeps a preview out of isDetecting and the status', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        let detectingDuringPreview: boolean | undefined;
+        vi.mocked(engine.detect).mockImplementation(async () => {
+            detectingDuringPreview = state().isDetecting;
+            return DETECTION;
+        });
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        expect(detectingDuringPreview).toBe(false);
+        expect(state().isDetecting).toBe(false);
+        expect(state().autoSelectStatus).toBe('ready');
+    });
+
+    /**
+     * The regression this feature would otherwise introduce. `endAutoClick` drops a click while
+     * a detection is in flight; previews run constantly, so without exempting them a user who
+     * hovered — which is to say, every user — would find their click ignored.
+     */
+    it('commits a click that lands while a preview is still detecting', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        let release!: (value: Detection) => void;
+        vi.mocked(engine.detect).mockImplementationOnce(
+            () =>
+                new Promise<Detection>((resolve) => {
+                    release = resolve;
+                }),
+        );
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await landed();
+
+        await click(cursorCanvas(), { clientX: 200, clientY: 200 });
+
+        expect(applyDetectedMask).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            release(DETECTION);
+            await Promise.resolve();
+        });
+    });
+
+    /**
+     * The cached path is exempt from the one-at-a-time guard, and has to be: it queues no
+     * decoder pass, so there is nothing for the detection already in flight to collide with,
+     * and refusing it would throw away the exact result the user was shown.
+     *
+     * Reached by clicking away from the preview first — a miss leaves the cache in place — so
+     * that a committed detection is still running when the click on the preview lands.
+     */
+    it('commits a cached click even while a committed detection is in flight', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        // Never resolves: the click that triggers it stays in flight for the rest of the test.
+        vi.mocked(engine.detect).mockImplementationOnce(() => new Promise<Detection>(() => {}));
+
+        await click(cursorCanvas(), { clientX: 400, clientY: 400 });
+        expect(state().isDetecting).toBe(true);
+        expect(applyDetectedMask).not.toHaveBeenCalled();
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+
+        expect(applyDetectedMask).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(applyDetectedMask).mock.calls[0][2]).toBe(DETECTION.silhouette);
+    });
+
+    /** The guard still holds for a click with no preview behind it. */
+    it('drops an uncached click while a committed detection is in flight', async () => {
+        const { cursorCanvas, state } = await setupAuto({
+            autoSelect: { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' } },
+        });
+
+        vi.mocked(engine.detect).mockImplementationOnce(() => new Promise<Detection>(() => {}));
+
+        await click(cursorCanvas(), { clientX: 400, clientY: 400 });
+        expect(state().isDetecting).toBe(true);
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(applyDetectedMask).not.toHaveBeenCalled();
+    });
+
+    /**
+     * The payoff: the click commits the exact silhouette that was on screen, with no second
+     * decoder pass to wait for and no chance of the model returning a different answer.
+     */
+    it('commits the previewed detection when the click lands on it', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+
+        // Still one: the click reused the preview rather than detecting again.
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(applyDetectedMask).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(applyDetectedMask).mock.calls[0][2]).toBe(DETECTION.silhouette);
+    });
+
+    it('detects again when the click lands away from what was previewed', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        await click(cursorCanvas(), { clientX: 400, clientY: 400 });
+
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+        expect(applyDetectedMask).toHaveBeenCalledTimes(1);
+    });
+
+    /** Single use: the editor tints the silhouette in place, so it cannot be committed twice. */
+    it('does not reuse the same preview for a second click', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+    });
+
+    it('erases through a shift-click, reusing the preview all the same', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10, shiftKey: true });
+
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(applyDetectedMask).mock.calls[0][4]).toBe('erase');
+    });
+
+    /**
+     * Re-armed rather than dropped: a preview run against a busy model would land after the
+     * commit it raced and preview the thing that was just committed. Arming again means a
+     * pointer left at rest still gets its preview once the model frees up.
+     *
+     * Driven through `selectAt` rather than a click, because that is the path where it shows:
+     * a click clears the preview when it settles, which cancels the re-armed timer along with
+     * it — previewing the object a click just committed is the noise this avoids, not a loss.
+     */
+    it('re-arms instead of previewing while a detection is in flight', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        let release!: (value: Detection) => void;
+        vi.mocked(engine.detect).mockImplementationOnce(
+            () =>
+                new Promise<Detection>((resolve) => {
+                    release = resolve;
+                }),
+        );
+
+        let selecting!: Promise<unknown>;
+        await act(async () => {
+            // Started, not awaited: it resolves only when `release` is called below. The
+            // microtask flush is what lets it reach the engine before the assertions.
+            selecting = state().selectAt({ x: 40, y: 40 });
+            await Promise.resolve();
+        });
+        expect(state().isDetecting).toBe(true);
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        // The pointer comes to rest while that is still running: the debounce fires, finds the
+        // model busy, and arms itself again rather than queueing behind it.
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            release(DETECTION);
+            await selecting;
+        });
+
+        // Still armed, so the preview lands without any further movement.
+        await rest();
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+    });
+
+    /**
+     * The detection is still true after a colour change; only its tint is stale. Dropping it
+     * would cost the user a fresh decoder pass for a repaint the compositor can do for free.
+     */
+    it('repaints a live preview in a new mask colour rather than dropping it', async () => {
+        const captured: { current?: ReturnType<typeof useMaskEditor> } = {};
+        let recolor: (value: string) => void = () => {};
+
+        const Recolorable = () => {
+            const [maskColor, setMaskColor] = useState('#ff0000');
+            recolor = setMaskColor;
+
+            const editor = useMaskEditor({
+                src: SRC,
+                onDrawingChange: vi.fn(),
+                autoSelect: AUTO,
+                mode: 'auto',
+                maskColor,
+            });
+            captured.current = editor;
+
+            return (
+                <div {...editor.containerProps}>
+                    <canvas ref={editor.canvasRef} />
+                    <canvas ref={editor.maskCanvasRef} />
+                    <canvas
+                        ref={editor.cursorCanvasRef}
+                        onMouseDown={editor.handleMouseDown}
+                        onMouseUp={editor.handleMouseUp}
+                    />
+                </div>
+            );
+        };
+
+        render(<Recolorable />);
+        await settle();
+        vi.mocked(engine.detect).mockClear();
+
+        const state = () => captured.current as ReturnType<typeof useMaskEditor>;
+        const cursorCanvas = () => state().cursorCanvasRef.current as HTMLCanvasElement;
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+        expect(state().isPreviewing).toBe(true);
+
+        act(() => recolor('#00ff00'));
+
+        // Still cached and still previewing: the click that follows needs no second detection,
+        // and commits in the colour the editor is painting with now.
+        expect(state().isPreviewing).toBe(true);
+
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+        expect(engine.detect).toHaveBeenCalledTimes(1);
+        expect(vi.mocked(applyDetectedMask).mock.calls[0][3]).toBe('#00ff00');
+    });
+
+    it('clears the preview when the pointer leaves the canvas', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+        expect(state().isPreviewing).toBe(true);
+
+        act(() => {
+            cursorCanvas().dispatchEvent(new PointerEvent('pointerleave', { bubbles: true, pointerType: 'mouse' }));
+        });
+
+        expect(state().isPreviewing).toBe(false);
+
+        // The cache went with it: a click now has to detect for itself.
+        await click(cursorCanvas(), { clientX: 10, clientY: 10 });
+        expect(engine.detect).toHaveBeenCalledTimes(2);
+    });
+
+    it('clears the preview on the way back to paint mode', async () => {
+        const { cursorCanvas, state } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+        expect(state().isPreviewing).toBe(true);
+
+        act(() => state().setMode('paint'));
+        expect(state().isPreviewing).toBe(false);
+    });
+
+    it('ignores a pointer that is not a mouse', async () => {
+        const { cursorCanvas } = await setupAuto();
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10, pointerType: 'touch' });
+        await rest();
+
+        expect(engine.detect).not.toHaveBeenCalled();
+    });
+
+    it('previews nothing when the option is off', async () => {
+        const { cursorCanvas } = await setupAuto({
+            autoSelect: { sam: { encoderUrl: 'e.onnx', decoderUrl: 'd.onnx' } },
+        });
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        expect(engine.detect).not.toHaveBeenCalled();
+    });
+
+    it('previews nothing in paint mode, where the cursor layer belongs to the brush', async () => {
+        const { cursorCanvas } = await setupAuto({ mode: 'paint' });
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        expect(engine.detect).not.toHaveBeenCalled();
+    });
+
+    /** A failed preview is speculative work: the user never asked for it and must not see it. */
+    it('swallows a failed preview without reporting it', async () => {
+        const onError = vi.fn();
+        const { cursorCanvas, state } = await setupAuto({
+            autoSelect: { ...AUTO, onError },
+        });
+
+        vi.mocked(engine.detect).mockRejectedValueOnce(new Error('decoder exploded'));
+
+        move(cursorCanvas(), { clientX: 10, clientY: 10 });
+        await rest();
+
+        expect(onError).not.toHaveBeenCalled();
+        expect(state().isPreviewing).toBe(false);
+        expect(state().autoSelectStatus).toBe('ready');
     });
 });

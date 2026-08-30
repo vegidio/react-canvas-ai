@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DetectedObject } from '../internal/detection';
 import type { Point } from '../internal/geometry';
-import type { Detection, SamEngine } from '../internal/sam/engine';
+import type { Detection, DetectOptions, SamEngine } from '../internal/sam/engine';
 import { toError } from '../internal/toError';
 import { useEventCallback, useLatest } from '../internal/useLatest';
 
@@ -52,6 +52,19 @@ export type AutoSelectOptions = {
     preload?: boolean;
     /** Detections scoring below this are discarded — the click paints nothing. */
     minScore?: number;
+    /**
+     * Draws the object under the cursor as an uncommitted overlay while the pointer moves over
+     * the image in `'auto'` mode, so the extent of a selection is visible before it is made.
+     * A click commits what is shown; nothing else does.
+     *
+     * The overlay appears on the move itself rather than after a pause, and every position is
+     * detected — including one inside the shape already drawn, so a smaller object nested in a
+     * larger selection stays reachable.
+     *
+     * Off by default: every hover that settles costs a decoder pass, and a consumer who only
+     * wants click-to-segment should not pay for one.
+     */
+    preview?: boolean;
     /** Called after a detection has been committed to the mask canvas. */
     onObjectDetected?: (object: DetectedObject) => void;
     /** Called when the model load or a detection fails. */
@@ -72,19 +85,33 @@ export type UseAutoSelectOptions = {
     shouldWarm: boolean;
 };
 
+/** Per-call options for {@link UseAutoSelectReturn.detect}. */
+export type DetectRequest = {
+    /**
+     * Marks a speculative detection — one the hover preview asked for, that the user did not.
+     * It stays out of `pending` and leaves `phase` alone, so a hover cannot flip `status` to
+     * `'detecting'`, cannot swap the container cursor to `progress`, and — the one that
+     * actually bites — cannot make the editor's one-at-a-time guard drop the very click the
+     * preview was preparing the user to make.
+     */
+    preview?: boolean;
+    /** Abandons the detection before the decoder, for a preview the pointer has moved past. */
+    signal?: AbortSignal;
+};
+
 export type UseAutoSelectReturn = {
     status: AutoSelectStatus;
     isDetecting: boolean;
     /**
      * Runs a detection at `point` (canvas pixels), silhouette sized to `target`. Resolves
-     * `undefined` for an empty or below-`minScore` result. Rejections are the caller's to
-     * route — only warm-up failures reach `onError` from here, or a failed detection would
-     * be reported twice.
+     * `undefined` for an empty, below-`minScore` or aborted result. Rejections are the
+     * caller's to route — only warm-up failures reach `onError` from here, or a failed
+     * detection would be reported twice.
      *
      * Resolves the {@link Detection} pair rather than the bare object: the editor composites
      * from the surface and hands `object` on to consumers.
      */
-    detect: (point: Point, target: Point) => Promise<Detection | undefined>;
+    detect: (point: Point, target: Point, request?: DetectRequest) => Promise<Detection | undefined>;
 };
 
 /**
@@ -194,25 +221,35 @@ export const useAutoSelect = (options: UseAutoSelectOptions): UseAutoSelectRetur
     }, []);
 
     const detect = useCallback(
-        async (point: Point, target: Point): Promise<Detection | undefined> => {
+        async (point: Point, target: Point, request?: DetectRequest): Promise<Detection | undefined> => {
             const current = configRef.current;
             if (!current) throw new Error('[MaskEditor] Auto-selection needs `autoSelect` to be configured.');
 
             const img = imageRef.current;
             if (!img) throw new Error('[MaskEditor] Auto-selection needs the image to finish loading.');
 
-            setPending((count) => count + 1);
+            // A preview publishes nothing at all: not the count, and not the phase either way.
+            // The count is what the editor's click guard reads, and the phase is what consumers
+            // render — neither should move for work the user never asked for.
+            const isPreview = request?.preview === true;
+            if (!isPreview) setPending((count) => count + 1);
 
             try {
                 const engine = await ensureEngine();
-                const detected = await engine.detect(img, point, target, { minScore: current.minScore });
-                setPhase('ready');
+                const detectOptions: DetectOptions = { minScore: current.minScore };
+                if (request?.signal) detectOptions.signal = request.signal;
+
+                const detected = await engine.detect(img, point, target, detectOptions);
+                if (!isPreview) setPhase('ready');
                 return detected;
             } catch (error) {
-                setPhase('error');
+                // Parking the editor in `'error'` — the banner, `onStatusChange('error')`, the
+                // lot — because a throwaway decode nobody asked for lost a race would report a
+                // broken model that the very next click segments with perfectly well.
+                if (!isPreview) setPhase('error');
                 throw toError(error);
             } finally {
-                setPending((count) => count - 1);
+                if (!isPreview) setPending((count) => count - 1);
             }
         },
         [ensureEngine],
