@@ -2,7 +2,7 @@ import { defineConfig } from 'tsdown';
 
 export default defineConfig({
     entry: ['src/index.ts'],
-    format: ['esm', 'cjs'],
+    format: ['esm'],
     platform: 'neutral',
     target: 'es2022',
     sourcemap: true,
@@ -13,8 +13,7 @@ export default defineConfig({
     // `onnxruntime-web` is an optional peer reached only through a dynamic import; listing it
     // is belt-and-braces (peers are auto-external) and documents that it must stay external.
     deps: { neverBundle: ['react', 'react-dom', 'react/jsx-runtime', 'onnxruntime-web'] },
-    // The exports map is hand-maintained: there is one entry, it never changes, and an
-    // explicit "types" condition per format is clearer than relying on file adjacency.
+    // The exports map is hand-maintained: there is one entry and it never changes.
     exports: false,
     publint: true,
 });

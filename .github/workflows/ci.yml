@@ -35,7 +35,7 @@ jobs:
         run: pnpm --filter react-canvas-ai test:coverage
 
       - name: Verify package types resolve
-        run: pnpm --filter react-canvas-ai exec attw --pack .
+        run: pnpm --filter react-canvas-ai exec attw --pack . --profile esm-only
 
       - name: Build playground
         run: pnpm --filter playground build
