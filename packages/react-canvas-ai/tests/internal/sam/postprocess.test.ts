@@ -13,10 +13,30 @@ const makeAlphaImage = (width: number, height: number, alphaAt: Array<[number, n
 };
 
 describe('logitsToAlpha', () => {
-    it('marks strictly positive logits as covered, RGB stays zero', () => {
+    it('ramps alpha with the logit instead of thresholding it, RGB stays zero', () => {
+        // ceil(127 + logit * 128 / 8), clamped: the sub-pixel edge the upscale interpolates.
         const { image } = logitsToAlpha(Float32Array.from([1, -1, 0.5, 0]), 2, 2);
 
-        expect([...image.data]).toEqual([0, 0, 0, 255, 0, 0, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0]);
+        expect([...image.data]).toEqual([0, 0, 0, 143, 0, 0, 0, 111, 0, 0, 0, 135, 0, 0, 0, 127]);
+    });
+
+    it('saturates logits past the ramp', () => {
+        const { image } = logitsToAlpha(Float32Array.from([40, -40, 8, -8]), 2, 2);
+
+        expect([image.data[3], image.data[7], image.data[11], image.data[15]]).toEqual([255, 0, 255, 0]);
+    });
+
+    /**
+     * The half-coverage rule the editor exports by has to split the mask exactly where the
+     * model does, or the ramp would quietly grow or shrink every detection by a rim.
+     */
+    it('crosses half coverage exactly at logit zero', () => {
+        const logits = Float32Array.from([0, 1e-3, -1e-3, 0]);
+        const { image } = logitsToAlpha(logits, 2, 2);
+
+        expect(image.data[3]).toBeLessThan(128);
+        expect(image.data[7]).toBeGreaterThanOrEqual(128);
+        expect(image.data[11]).toBeLessThan(128);
     });
 
     /**
@@ -71,6 +91,7 @@ describe('logitsToMask', () => {
         imageSmoothingEnabled: false,
         drawImage: vi.fn(),
         getImageData: vi.fn(),
+        putImageData: vi.fn(),
     };
     let logitCanvas: HTMLCanvasElement;
     let targetCanvas: HTMLCanvasElement;
@@ -78,6 +99,7 @@ describe('logitsToMask', () => {
     beforeEach(() => {
         logitCtx.putImageData.mockReset();
         targetCtx.drawImage.mockReset();
+        targetCtx.putImageData.mockReset();
         targetCtx.getImageData.mockReset().mockReturnValue(makeAlphaImage(8, 4, [[2, 1]]));
 
         logitCanvas = { getContext: vi.fn(() => logitCtx) } as unknown as HTMLCanvasElement;
@@ -97,14 +119,14 @@ describe('logitsToMask', () => {
         expect(targetCtx.imageSmoothingEnabled).toBe(true);
     });
 
-    it('rasterizes the thresholded logits before scaling', () => {
+    it('rasterizes the ramped logits before scaling', () => {
         const logits = new Float32Array(256 * 256);
         logits[0] = 2;
         logitsToMask(logits, [256, 256], [1024, 1024], 8, 4);
 
         const [image] = logitCtx.putImageData.mock.calls[0] as [ImageData];
-        expect(image.data[3]).toBe(255);
-        expect(image.data[7]).toBe(0);
+        expect(image.data[3]).toBe(159);
+        expect(image.data[7]).toBe(127);
     });
 
     /**
@@ -147,6 +169,40 @@ describe('logitsToMask', () => {
         logits[0] = 2;
 
         expect(logitsToMask(logits, [256, 256], [1024, 512], 8, 4).isEmpty).toBe(false);
+    });
+
+    /**
+     * The rim is the point of the ramp, but stretched by the upscale it spreads over many
+     * pixels and reads as a glow. Rescaling it about half coverage tightens it in place: 127
+     * and 128 stay either side of the threshold, so the contour itself cannot move.
+     */
+    it('narrows the anti-aliased rim without moving the contour', () => {
+        const logits = new Float32Array(256 * 256);
+        logits[0] = 2;
+        targetCtx.getImageData.mockReturnValue(
+            makeAlphaImage(4, 1, [
+                [0, 0, 127],
+                [1, 0, 128],
+                [2, 0, 100],
+                [3, 0, 255],
+            ]),
+        );
+
+        logitsToMask(logits, [256, 256], [1024, 1024], 2048, 2048);
+
+        // gain = scale 8 / 1.5px, applied about 127.5.
+        const [image, x, y] = targetCtx.putImageData.mock.calls[0] as [ImageData, number, number];
+        expect([image.data[3], image.data[7], image.data[11], image.data[15]]).toEqual([125, 130, 0, 255]);
+        expect([x, y]).toEqual([0, 0]);
+    });
+
+    it('leaves the rim alone when the mask is scaled down', () => {
+        const logits = new Float32Array(256 * 256);
+        logits[0] = 2;
+
+        logitsToMask(logits, [256, 256], [1024, 1024], 64, 64);
+
+        expect(targetCtx.putImageData).not.toHaveBeenCalled();
     });
 
     /** A draw region, so it only has to *contain* the shape — generous is fine, short is not. */

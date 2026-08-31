@@ -8,6 +8,41 @@ import { SAM_INPUT_SIZE } from './preprocess';
 const LOGIT_THRESHOLD = 0;
 
 /**
+ * Half-width, in logits, of the band the alpha ramp spends its 256 levels on. Anything further
+ * from the decision boundary than this saturates to fully covered or fully clear.
+ *
+ * This is what carries the model's sub-pixel edge through an 8-bit canvas. The logits are a
+ * smooth field sampled on a 256px grid, and the true edge crosses *between* samples; binarizing
+ * them here — which is what this did — throws that away and pins the boundary to the low-res
+ * grid, so the upscale can only stretch a staircase into a bigger, blurrier staircase. Encoding
+ * the field instead lets the upscale interpolate it, and the half-alpha contour of the result
+ * lands where the logits actually cross zero. It is also what SAM's own postprocessing does:
+ * interpolate the low-res logits to full resolution, *then* threshold.
+ *
+ * The width is a trade. Too narrow and the samples either side of an edge both saturate, which
+ * is binarization again; too wide and logits far from any edge stop saturating, washing faint
+ * coverage across the whole frame. Eight logits keeps a couple of samples on the ramp for the
+ * edge gradients SlimSAM actually produces, while a pixel a source pixel or so clear of the
+ * boundary is already hard 0 or 255.
+ */
+const LOGIT_RAMP = 8;
+
+/** Alpha per logit, so ±{@link LOGIT_RAMP} lands exactly on the ends of the 0-255 range. */
+const ALPHA_PER_LOGIT = 128 / LOGIT_RAMP;
+
+/**
+ * How wide, in target pixels, the upscaled edge is sharpened back down to.
+ *
+ * The ramp is measured in logits, so how far it spreads once stretched depends on the gradient
+ * the model produced and on the scale factor — for a large image it can smear an edge over the
+ * best part of ten pixels, which reads as a glow rather than a selection. Rescaling the ramp
+ * about the half-alpha point narrows it without moving it, so the contour stays exactly where
+ * the interpolation put it and only the anti-aliased rim tightens. About a pixel and a half is
+ * what the brush's own round caps lay down.
+ */
+const EDGE_SOFTNESS_PX = 1.5;
+
+/**
  * How far {@link RasterizedMask.paintRect} is grown beyond the scaled low-res bounds.
  *
  * The box is measured on the 256px silhouette and then stretched, so a covered low-res pixel
@@ -19,6 +54,9 @@ const PAINT_RECT_SLACK_PX = 2;
 
 const EMPTY_BOX: BoundingBox = { x: 0, y: 0, width: 0, height: 0 };
 
+/** Whichever 2D context {@link createCanvas} handed back, element or offscreen. */
+type ScratchContext2D = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
+
 /** A thresholded low-res silhouette, with the box bounding its coverage. */
 export type AlphaRaster = {
     image: ImageData;
@@ -27,9 +65,15 @@ export type AlphaRaster = {
 };
 
 /**
- * Thresholds low-res mask logits into an alpha-only `ImageData`, measuring the coverage bounds
- * in the same pass. Pure so the thresholding is testable without a canvas; RGB stays zero
- * because the editor tints the silhouette itself.
+ * Ramps low-res mask logits into an alpha-only `ImageData`, measuring the coverage bounds in
+ * the same pass. Pure so the mapping is testable without a canvas; RGB stays zero because the
+ * editor tints the silhouette itself.
+ *
+ * Alpha is a linear ramp over ±{@link LOGIT_RAMP} rather than a hard 0/255 threshold, which is
+ * what lets the upscale reconstruct the edge instead of magnifying the grid it was sampled on —
+ * see {@link LOGIT_RAMP}. Coverage is unchanged by that: the ramp is built so `alpha >=
+ * MASK_THRESHOLD` and `logit > LOGIT_THRESHOLD` are the same predicate for every value, zero
+ * included, so everything downstream still splits the mask exactly where the model does.
  *
  * The bounds come from here rather than from a second scan of the upscaled result because this
  * loop is 256x256 — some 24x cheaper than the full-resolution one, and it needs no canvas
@@ -46,10 +90,16 @@ export const logitsToAlpha = (logits: Float32Array, width: number, height: numbe
 
     for (let y = 0; y < height; y += 1) {
         for (let x = 0; x < width; x += 1) {
-            const covered = logits[y * width + x] > LOGIT_THRESHOLD;
-            if (!covered) continue;
+            const index = y * width + x;
+            const logit = logits[index];
 
-            image.data[(y * width + x) * 4 + 3] = 255;
+            // `ceil` about 127, not `round` about 128: it puts the step from 127 to 128 exactly
+            // at logit 0, so the half-coverage rule the rest of the editor exports by agrees
+            // with the model's own boundary rather than sitting half a level off it.
+            const ramped = Math.ceil(127 + logit * ALPHA_PER_LOGIT);
+            image.data[index * 4 + 3] = ramped < 0 ? 0 : ramped > 255 ? 255 : ramped;
+
+            if (logit <= LOGIT_THRESHOLD) continue;
 
             if (x < minX) minX = x;
             if (y < minY) minY = y;
@@ -162,9 +212,18 @@ export const logitsToMask = (
     if (!targetCtx) throw new Error('Failed to acquire a 2D context for the target mask.');
 
     // Smoothing on: the 256px silhouette is stretched several times over, and nearest-neighbour
-    // edges turn into staircases the brush never produces.
+    // edges turn into staircases the brush never produces. With the ramp above carrying the
+    // logits rather than a binary silhouette, this interpolation is what actually reconstructs
+    // the edge — it is the `F.interpolate(..., 'bilinear')` of SAM's own postprocessing, and
+    // the contour it draws through the half-alpha level is sub-pixel accurate.
     targetCtx.imageSmoothingEnabled = true;
     targetCtx.drawImage(logitCanvas as CanvasImageSource, 0, 0, srcW, srcH, 0, 0, targetWidth, targetHeight);
+
+    const scaleX = targetWidth / srcW;
+    const scaleY = targetHeight / srcH;
+    const paintRect = scaleBounds(bounds, scaleX, scaleY, targetWidth, targetHeight);
+
+    sharpenEdges(targetCtx, paintRect, (scaleX + scaleY) / 2 / EDGE_SOFTNESS_PX);
 
     let mask: ImageData | undefined;
     const readMask = (): ImageData => (mask ??= targetCtx.getImageData(0, 0, targetWidth, targetHeight));
@@ -175,10 +234,43 @@ export const logitsToMask = (
     return {
         silhouette: targetCanvas,
         isEmpty: bounds.width === 0 || bounds.height === 0,
-        paintRect: scaleBounds(bounds, targetWidth / srcW, targetHeight / srcH, targetWidth, targetHeight),
+        paintRect,
         readMask,
         readBbox,
     };
+};
+
+/**
+ * Narrows the anti-aliased rim of an upscaled mask to about {@link EDGE_SOFTNESS_PX}, by
+ * rescaling alpha about the half-coverage level inside `rect`.
+ *
+ * The pivot is what makes this safe: 127 and 128 are fixed points of the rescale, so no pixel
+ * can cross the coverage threshold and the contour the interpolation produced does not move.
+ * Only the width of the ramp around it changes — the edge stays exactly where it was and stops
+ * being a gradient several pixels deep.
+ *
+ * Bounded by `rect`, so the cost is the object's own area rather than the frame's: a hover
+ * preview over a small object touches a few thousand pixels, and outside the box the ramp has
+ * long since saturated, so there is nothing there to rescale anyway. Skipped entirely when the
+ * mask is being scaled down, where the rim is already at most a pixel or so wide.
+ */
+const sharpenEdges = (ctx: ScratchContext2D, rect: BoundingBox, gain: number): void => {
+    if (gain <= 1 || rect.width === 0 || rect.height === 0) return;
+
+    const image = ctx.getImageData(rect.x, rect.y, rect.width, rect.height);
+    const { data } = image;
+
+    for (let i = 3; i < data.length; i += 4) {
+        const alpha = data[i];
+        // The saturated interior and exterior are most of the box and cannot move; only the
+        // rim between them has anything to rescale.
+        if (alpha === 0 || alpha === 255) continue;
+
+        const scaled = 127.5 + (alpha - 127.5) * gain;
+        data[i] = scaled < 0 ? 0 : scaled > 255 ? 255 : Math.round(scaled);
+    }
+
+    ctx.putImageData(image, rect.x, rect.y);
 };
 
 /** Stretches a low-res box into target space, grown by the slack and clipped to the surface. */
@@ -191,10 +283,17 @@ const scaleBounds = (
 ): BoundingBox => {
     if (bounds.width === 0 || bounds.height === 0) return { ...EMPTY_BOX };
 
-    const left = Math.max(0, Math.floor(bounds.x * scaleX) - PAINT_RECT_SLACK_PX);
-    const top = Math.max(0, Math.floor(bounds.y * scaleY) - PAINT_RECT_SLACK_PX);
-    const right = Math.min(targetWidth, Math.ceil((bounds.x + bounds.width) * scaleX) + PAINT_RECT_SLACK_PX);
-    const bottom = Math.min(targetHeight, Math.ceil((bounds.y + bounds.height) * scaleY) + PAINT_RECT_SLACK_PX);
+    // `bounds` only covers pixels the model calls the object, but the ramp reaches roughly a
+    // source pixel past them, and that partial coverage is the anti-aliased rim. A box measured
+    // on the coverage alone would clip it — and it is exactly the part this change exists to
+    // produce — so the rim is added to the slack rather than left to it.
+    const marginX = Math.ceil(scaleX) + PAINT_RECT_SLACK_PX;
+    const marginY = Math.ceil(scaleY) + PAINT_RECT_SLACK_PX;
+
+    const left = Math.max(0, Math.floor(bounds.x * scaleX) - marginX);
+    const top = Math.max(0, Math.floor(bounds.y * scaleY) - marginY);
+    const right = Math.min(targetWidth, Math.ceil((bounds.x + bounds.width) * scaleX) + marginX);
+    const bottom = Math.min(targetHeight, Math.ceil((bounds.y + bounds.height) * scaleY) + marginY);
 
     return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
 };
