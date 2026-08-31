@@ -95,36 +95,36 @@ Resume editing from a previously saved mask by passing it as the `initialMask` p
 
 ### Component props
 
-| Prop | Type | Required | Default | Description |
-| --- | --- | --- | --- | --- |
-| `src` | `string` | Yes | — | Source URL of the image to edit. |
-| `onDrawingChange` | `(isDrawing: boolean) => void` | Yes | — | Called when the user starts or stops drawing. |
-| `ref` | `Ref<MaskEditorCanvasRef>` | No | — | The editor's imperative handle — see [Ref API](#ref-api-maskeditorcanvasref). Was `canvasRef` before the React 19 release. |
-| `autoSelect` | `AutoSelectOptions` | No | — | Enables the AI auto-selection mode — see [🤖 Auto-selection](#-auto-selection-ai). Absent, the editor is paint-only. |
-| `mode` | `'paint' \| 'auto'` | No | `'paint'` | Current interaction mode, quasi-controlled: the prop wins when it changes, `setMode` wins in between. Forced to `'paint'` without `autoSelect`. |
-| `onModeChange` | `(mode: MaskEditorMode) => void` | No | — | Called when the mode changes through `setMode` / the ref. |
-| `className` | `string` | No | — | Appended to the root element's own class name. |
-| `style` | `React.CSSProperties` | No | — | Merged over the root element's built-in layout styles (yours win). |
-| `cursorSize` | `number` | No | `10` | Radius in pixels of the brush. |
-| `onCursorSizeChange` | `(size: number) => void` | No | — | Called when the user changes the brush size with the wheel. Omit it and wheel resizing is disabled. |
-| `maskOpacity` | `number` | No | `0.4` | CSS opacity of the mask layer, 0–1. |
-| `maskColor` | `string` | No | `#ffffff` | Hex colour for the mask, with or without the leading `#`. Changing it retints strokes that are already on the canvas. |
-| `maskBlendMode` | `MaskBlendMode` | No | `normal` | [CSS blend mode](https://developer.mozilla.org/en-US/docs/Web/CSS/blend-mode) for the mask layer. |
-| `maxWidth` | `number` | No | `1240` | Images wider than this are scaled down. |
-| `maxHeight` | `number` | No | `1240` | Images taller than this are scaled down. |
-| `crossOrigin` | `string` | No | `anonymous` | `crossOrigin` attribute for the underlying `<img>`. Useful for CORS images. |
-| `onUndoRequest` | `() => void` | No | — | Called when the user requests an undo. |
-| `onRedoRequest` | `() => void` | No | — | Called when the user requests a redo. |
-| `onMaskChange` | `(mask: string) => void` | No | — | Called with the mask as a data URL. Debounced while drawing. |
-| `initialMask` | `string` | No | — | Pre-load an existing mask as a base64 data URL, to resume from a saved state. |
-| `scale` | `number` | No | `1` | Zoom scale, quasi-controlled: the prop wins when it changes, `setScale`/`zoomIn`/`zoomOut`/the wheel win in between. Omit it to drive the zoom entirely through those. |
-| `minScale` | `number` | No | `0.8` | Minimum zoom scale. |
-| `maxScale` | `number` | No | `4` | Maximum zoom scale. |
-| `onScaleChange` | `(scale: number) => void` | No | — | Called when the zoom scale changes. |
-| `enableWheelZoom` | `boolean` | No | `true` | Allow `Ctrl`/`Cmd` + wheel to zoom. |
-| `onPanChange` | `(x: number, y: number) => void` | No | — | Called when the pan position changes. |
-| `constrainPan` | `boolean` | No | `true` | Keep the image within view while panning. |
-| `keyboardScope` | `'window' \| 'container'` | No | `window` | Where undo/redo and the pan modifier keys are listened for. Use `container` when more than one editor is on the page. |
+| Prop                 | Type                             | Required | Default     | Description                                                                                                                                                            |
+|----------------------|----------------------------------|----------|-------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| `src`                | `string`                         | Yes      | —           | Source URL of the image to edit.                                                                                                                                       |
+| `onDrawingChange`    | `(isDrawing: boolean) => void`   | Yes      | —           | Called when the user starts or stops drawing.                                                                                                                          |
+| `ref`                | `Ref<MaskEditorCanvasRef>`       | No       | —           | The editor's imperative handle — see [Ref API](#ref-api-maskeditorcanvasref). Was `canvasRef` before the React 19 release.                                             |
+| `autoSelect`         | `AutoSelectOptions`              | No       | —           | Enables the AI auto-selection mode — see [🤖 Auto-selection](#-auto-selection-ai). Absent, the editor is paint-only.                                                   |
+| `mode`               | `'paint' \| 'auto'`              | No       | `'paint'`   | Current interaction mode, quasi-controlled: the prop wins when it changes, `setMode` wins in between. Forced to `'paint'` without `autoSelect`.                        |
+| `onModeChange`       | `(mode: MaskEditorMode) => void` | No       | —           | Called when the mode changes through `setMode` / the ref.                                                                                                              |
+| `className`          | `string`                         | No       | —           | Appended to the root element's own class name.                                                                                                                         |
+| `style`              | `React.CSSProperties`            | No       | —           | Merged over the root element's built-in layout styles (yours win).                                                                                                     |
+| `cursorSize`         | `number`                         | No       | `10`        | Radius in pixels of the brush.                                                                                                                                         |
+| `onCursorSizeChange` | `(size: number) => void`         | No       | —           | Called when the user changes the brush size with the wheel. Omit it and wheel resizing is disabled.                                                                    |
+| `maskOpacity`        | `number`                         | No       | `0.4`       | CSS opacity of the mask layer, 0–1.                                                                                                                                    |
+| `maskColor`          | `string`                         | No       | `#ffffff`   | Hex colour for the mask, with or without the leading `#`. Changing it retints strokes that are already on the canvas.                                                  |
+| `maskBlendMode`      | `MaskBlendMode`                  | No       | `normal`    | [CSS blend mode](https://developer.mozilla.org/en-US/docs/Web/CSS/blend-mode) for the mask layer.                                                                      |
+| `maxWidth`           | `number`                         | No       | `1240`      | Images wider than this are scaled down.                                                                                                                                |
+| `maxHeight`          | `number`                         | No       | `1240`      | Images taller than this are scaled down.                                                                                                                               |
+| `crossOrigin`        | `string`                         | No       | `anonymous` | `crossOrigin` attribute for the underlying `<img>`. Useful for CORS images.                                                                                            |
+| `onUndoRequest`      | `() => void`                     | No       | —           | Called when the user requests an undo.                                                                                                                                 |
+| `onRedoRequest`      | `() => void`                     | No       | —           | Called when the user requests a redo.                                                                                                                                  |
+| `onMaskChange`       | `(mask: string) => void`         | No       | —           | Called with the mask as a data URL. Debounced while drawing.                                                                                                           |
+| `initialMask`        | `string`                         | No       | —           | Pre-load an existing mask as a base64 data URL, to resume from a saved state.                                                                                          |
+| `scale`              | `number`                         | No       | `1`         | Zoom scale, quasi-controlled: the prop wins when it changes, `setScale`/`zoomIn`/`zoomOut`/the wheel win in between. Omit it to drive the zoom entirely through those. |
+| `minScale`           | `number`                         | No       | `0.8`       | Minimum zoom scale.                                                                                                                                                    |
+| `maxScale`           | `number`                         | No       | `4`         | Maximum zoom scale.                                                                                                                                                    |
+| `onScaleChange`      | `(scale: number) => void`        | No       | —           | Called when the zoom scale changes.                                                                                                                                    |
+| `enableWheelZoom`    | `boolean`                        | No       | `true`      | Allow `Ctrl`/`Cmd` + wheel to zoom.                                                                                                                                    |
+| `onPanChange`        | `(x: number, y: number) => void` | No       | —           | Called when the pan position changes.                                                                                                                                  |
+| `constrainPan`       | `boolean`                        | No       | `true`      | Keep the image within view while panning.                                                                                                                              |
+| `keyboardScope`      | `'window' \| 'container'`        | No       | `window`    | Where undo/redo and the pan modifier keys are listened for. Use `container` when more than one editor is on the page.                                                  |
 
 `MaskBlendMode` is the union of the CSS `mix-blend-mode` keywords: `normal`, `multiply`, `screen`, `overlay`, `darken`, `lighten`, `color-dodge`, `color-burn`, `hard-light`, `soft-light`, `difference`, `exclusion`, `hue`, `saturation`, `color`, `luminosity`.
 
@@ -132,24 +132,24 @@ Resume editing from a previously saved mask by passing it as the `initialMask` p
 
 The `MaskEditor` component exposes useful methods via `ref`:
 
-| Name | Type | Description |
-| --- | --- | --- |
-| `maskCanvas?` | `HTMLCanvasElement` | The mask canvas element, or `undefined` before it has mounted. See the representation note below. |
-| `maskColor` | `string` | The colour strokes are currently painted with. |
-| `maskOpacity` | `number` | The mask layer's current opacity. |
-| `maskBlendMode` | `MaskBlendMode` | The mask layer's current `mix-blend-mode`. |
-| `cursorSize` | `number` | The current brush radius, wheel-driven changes included. |
-| `mode` | `MaskEditorMode` | The active interaction mode (`'paint'` without `autoSelect`). |
-| `autoSelectStatus` | `AutoSelectStatus` | Lifecycle of the AI backend (`'idle'` without `autoSelect`). |
-| `undo()` | `() => void` | Undo the last mask change. |
-| `redo()` | `() => void` | Redo the last undone mask change. |
-| `clear()` | `() => void` | Clear the mask. |
-| `resetZoom()` | `() => void` | Reset zoom to initial scale and center the image. |
-| `setPan()` | `(x: number, y: number) => void` | Set the pan position manually. |
-| `zoomIn()` | `() => void` | Zoom in by one step (0.2 scale increment). |
-| `zoomOut()` | `() => void` | Zoom out by one step (0.2 scale decrement). |
-| `setMode()` | `(mode: MaskEditorMode) => void` | Switch between `'paint'` and `'auto'`. Warns and no-ops on `'auto'` without `autoSelect`. |
-| `selectAt()` | `(point: { x; y }) => Promise<DetectedObject \| undefined>` | Programmatic auto-selection at a canvas-pixel point — see [🤖 Auto-selection](#-auto-selection-ai). |
+| Name               | Type                                                        | Description                                                                                         |
+|--------------------|-------------------------------------------------------------|-----------------------------------------------------------------------------------------------------|
+| `maskCanvas?`      | `HTMLCanvasElement`                                         | The mask canvas element, or `undefined` before it has mounted. See the representation note below.   |
+| `maskColor`        | `string`                                                    | The colour strokes are currently painted with.                                                      |
+| `maskOpacity`      | `number`                                                    | The mask layer's current opacity.                                                                   |
+| `maskBlendMode`    | `MaskBlendMode`                                             | The mask layer's current `mix-blend-mode`.                                                          |
+| `cursorSize`       | `number`                                                    | The current brush radius, wheel-driven changes included.                                            |
+| `mode`             | `MaskEditorMode`                                            | The active interaction mode (`'paint'` without `autoSelect`).                                       |
+| `autoSelectStatus` | `AutoSelectStatus`                                          | Lifecycle of the AI backend (`'idle'` without `autoSelect`).                                        |
+| `undo()`           | `() => void`                                                | Undo the last mask change.                                                                          |
+| `redo()`           | `() => void`                                                | Redo the last undone mask change.                                                                   |
+| `clear()`          | `() => void`                                                | Clear the mask.                                                                                     |
+| `resetZoom()`      | `() => void`                                                | Reset zoom to initial scale and center the image.                                                   |
+| `setPan()`         | `(x: number, y: number) => void`                            | Set the pan position manually.                                                                      |
+| `zoomIn()`         | `() => void`                                                | Zoom in by one step (0.2 scale increment).                                                          |
+| `zoomOut()`        | `() => void`                                                | Zoom out by one step (0.2 scale decrement).                                                         |
+| `setMode()`        | `(mode: MaskEditorMode) => void`                            | Switch between `'paint'` and `'auto'`. Warns and no-ops on `'auto'` without `autoSelect`.           |
+| `selectAt()`       | `(point: { x; y }) => Promise<DetectedObject \| undefined>` | Programmatic auto-selection at a canvas-pixel point — see [🤖 Auto-selection](#-auto-selection-ai). |
 
 The style members, `mode` and `autoSelectStatus` are live reads of the editor's current state, so a peer component that draws into `maskCanvas` itself can match hand-painted strokes without being handed the same props a second time.
 
@@ -211,19 +211,19 @@ In auto mode:
 - Drags, pans, and clicks made while a detection is already running are ignored; the cursor turns to a crosshair, and to `progress` while detecting.
 - The brush is fully suspended: no dabs, no brush outline, no wheel resizing.
 
-Every auto selection is committed through the editor's normal pipeline: it lands in the **undo history** (one `Ctrl/Cmd + Z` removes it), fires **`onMaskChange`**, and is painted in the live `maskColor` at full alpha — pixel-identical to manual paint, so recolouring, exporting and erasing treat it like any stroke.
+Every auto selection is committed through the editor's normal pipeline: it lands in the **undo history** (one `Ctrl/Cmd + Z` removes it), fires **`onMaskChange`**, and is painted in the live `maskColor` at full alpha — pixel-identical to manual paint, so recolouring, exporting, and erasing treat it like any stroke.
 
 ### `AutoSelectOptions`
 
-| Option | Type | Default | Description |
-| --- | --- | --- | --- |
-| `sam` | `SamConfig` | required | Model configuration — see below. |
-| `preload` | `boolean` | `false` | Warm the sessions and image embedding as soon as the image decodes, instead of on the first switch to auto mode. |
-| `minScore` | `number` | `0` | Detections scoring below this are discarded — the click paints nothing. |
-| `preview` | `boolean` | `false` | Show what a click would select while the pointer hovers — see [Hover preview](#hover-preview). |
-| `onObjectDetected` | `(object: DetectedObject) => void` | — | Called after a detection has been committed to the mask. |
-| `onError` | `(error: Error) => void` | — | Called when the model load or a click-driven detection fails. |
-| `onStatusChange` | `(status: AutoSelectStatus) => void` | — | Lifecycle notifications; hook/provider consumers can read `autoSelectStatus` from the return value instead. |
+| Option             | Type                                 | Default  | Description                                                                                                      |
+|--------------------|--------------------------------------|----------|------------------------------------------------------------------------------------------------------------------|
+| `sam`              | `SamConfig`                          | required | Model configuration — see below.                                                                                 |
+| `preload`          | `boolean`                            | `false`  | Warm the sessions and image embedding as soon as the image decodes, instead of on the first switch to auto mode. |
+| `minScore`         | `number`                             | `0`      | Detections scoring below this are discarded — the click paints nothing.                                          |
+| `preview`          | `boolean`                            | `false`  | Show what a click would select while the pointer hovers — see [Hover preview](#hover-preview).                   |
+| `onObjectDetected` | `(object: DetectedObject) => void`   | —        | Called after a detection has been committed to the mask.                                                         |
+| `onError`          | `(error: Error) => void`             | —        | Called when the model load or a click-driven detection fails.                                                    |
+| `onStatusChange`   | `(status: AutoSelectStatus) => void` | —        | Lifecycle notifications; hook/provider consumers can read `autoSelectStatus` from the return value instead.      |
 
 `SamConfig` takes `encoderUrl` and `decoderUrl` (required), plus optional `wasmPaths` (override for `ort.env.wasm.wasmPaths`), `executionProviders` (default `['wasm']`) and `debug` (log tensor names on load).
 
@@ -419,7 +419,7 @@ const CustomMaskEditor = () => {
 };
 ```
 
-(Prefer `MaskEditorLayers` over hand-rolling the three canvases — it carries the stacking, z-order, pointer-events and blend-mode contract for you, and its `cursor` prop takes the value computed above. `maskEditorLayerStyles(...)` is exported for layouts that must place the canvases themselves.)
+(Prefer `MaskEditorLayers` over hand-rolling the three canvases — it carries the stacking, z-order, pointer-events, and blend-mode contract for you, and its `cursor` prop takes the value computed above. `maskEditorLayerStyles(...)` is exported for layouts that must place the canvases themselves.)
 
 ### Using `MaskEditorProvider` context
 
@@ -483,7 +483,7 @@ Programmatic control is available everywhere the editor state is: `zoomIn()`, `z
 
 ### Keyboard scope
 
-By default the editor listens for shortcuts on `window`, so `Ctrl/Cmd + Z` works from anywhere on the page. That is the right behaviour for a single editor, but it means **two editors on the same page both respond to one keystroke**.
+By default, the editor listens for shortcuts on `window`, so `Ctrl/Cmd + Z` works from anywhere on the page. That is the right behaviour for a single editor, but it means **two editors on the same page both respond to one keystroke**.
 
 Set `keyboardScope="container"` to make an editor respond only while focus is inside it:
 
@@ -561,17 +561,15 @@ Sources worth re-checking when the time comes:
 [TypeScript 7 progress](https://devblogs.microsoft.com/typescript/progress-on-typescript-7-december-2025/) ·
 [tsdown dts options](https://tsdown.dev/options/dts)
 
-## 📜 Notes
+## 🙌 Credits
 
-- All mask operations are done on a separate canvas for performance
-- The mask is returned as a **black-and-white PNG (base64)** — white where masked, black where not. A pixel counts as masked when the mask layer is at least half covered there, so anti-aliased stroke edges resolve on export the same way they look on screen
-- Undo history is byte-budgeted (64 MB by default), so a large canvas keeps fewer states and a small one keeps more
-- SAM inference runs on the main thread through ONNX Runtime's own WASM workers; a click typically resolves in well under a second on a warm model
-- Forked and modernized from [`react-mask-editor`](https://www.npmjs.com/package/react-mask-editor), with the auto-selection features folded in from [`react-canvas-masker-auto-selection`](https://github.com/vegidio/react-canvas-masker-auto-selection)
+**react-canvas-ai** started as a fork of [react-canvas-masker](https://github.com/3rChuss/react-canvas-masker) by [3rChuss](https://github.com/3rChuss), which was itself a fork of [react-mask-editor](https://github.com/la-voliere/react-mask-editor) by [la-voliere](https://github.com/la-voliere). Both are released under the Apache 2.0 License.
+
+The code has since been substantially rewritten — a pnpm monorepo, an ESM-only build, the SlimSAM auto-selection backend, and a reworked zoom/pan and rendering pipeline — but the mask-editing foundation traces back to those projects, and this note is here to credit them.
 
 ## 📝 License
 
-**react-canvas-ai** is released under the Apache 2.0 License. See [LICENSE](LICENSE) for details.
+**react-canvas-ai** is released under the Apache 2.0 License. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for details.
 
 ## 👨🏾‍💻 Author
 

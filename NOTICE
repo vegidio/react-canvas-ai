@@ -1,0 +1,13 @@
+react-canvas-ai
+Copyright 2026 Vinicius Egidio
+
+This product includes software originally developed as part of the following
+projects, both licensed under the Apache License, Version 2.0:
+
+  - react-canvas-masker (https://github.com/3rChuss/react-canvas-masker)
+    Copyright the react-canvas-masker authors
+
+  - react-mask-editor (https://github.com/la-voliere/react-mask-editor)
+    Copyright the react-mask-editor authors
+
+Portions of this software have been modified from those originals.

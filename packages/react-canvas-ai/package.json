@@ -40,7 +40,8 @@
     "files": [
         "dist",
         "README.md",
-        "LICENSE"
+        "LICENSE",
+        "NOTICE"
     ],
     "sideEffects": false,
     "engines": {
@@ -57,8 +58,8 @@
         "test:coverage": "vitest run --coverage",
         "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
         "clean": "rm -rf dist",
-        "prepack": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE",
-        "postpack": "rm -f ./README.md ./LICENSE"
+        "prepack": "cp ../../README.md ./README.md && cp ../../LICENSE ./LICENSE && cp ../../NOTICE ./NOTICE",
+        "postpack": "rm -f ./README.md ./LICENSE ./NOTICE"
     },
     "peerDependencies": {
         "onnxruntime-web": "^1.24.3",
